@@ -36,8 +36,8 @@ namespace Exporter {
 
         private const string dateFormat = "yyyy-MM-dd HH:mm:ss";
 
-        //Writes every image: the descriptions are always replaced (when a categorizer is given),
-        //size, resolution and metadata (date taken, camera, orientation, gps) are only read again when the image changed in the hiddenStorerFolder.
+        //Writes every image: the descriptions (when a categorizer is given), size, resolution and
+        //metadata (date taken, camera, orientation, gps) are always read again and replaced.
         public static void Write(string file, DescriptionCategorizer? categorizer, IReadOnlyList<(StoredImage Image, string FileName)> images, IProgress<int> progress, CancellationToken token) {
             SqliteConnectionStringBuilder builder = new SqliteConnectionStringBuilder {
                 DataSource = file,
@@ -50,8 +50,6 @@ namespace Exporter {
 
             execute(connection, schema);
             addMissingColumns(connection);
-
-            Dictionary<int, string> known = readKnownImages(connection);
 
             using SqliteTransaction transaction = connection.BeginTransaction();
 
@@ -88,17 +86,14 @@ namespace Exporter {
 
                 run(addImage, number, fileName, storedAt);
 
-                string? knownChange;
-                if (!known.TryGetValue(number, out knownChange) || knownChange != changedAt) {
-                    byte[]? bytes = SchuleImageStore.ReadFileByteShift(image.FilePath);
+                byte[]? bytes = SchuleImageStore.ReadFileByteShift(image.FilePath);
 
-                    if (bytes != null) {
-                        ImageDetails details = ImageDetails.Read(bytes);
+                if (bytes != null) {
+                    ImageDetails details = ImageDetails.Read(bytes);
 
-                        run(setDetails, number, changedAt, details.Size, orNull(details.Width), orNull(details.Height), details.Format,
-                            orNull(details.TakenAt?.ToString(dateFormat)), orNull(details.CameraMake), orNull(details.CameraModel), orNull(details.Orientation),
-                            orNull(details.Latitude), orNull(details.Longitude), orNull(details.Altitude));
-                    }
+                    run(setDetails, number, changedAt, details.Size, orNull(details.Width), orNull(details.Height), details.Format,
+                        orNull(details.TakenAt?.ToString(dateFormat)), orNull(details.CameraMake), orNull(details.CameraModel), orNull(details.Orientation),
+                        orNull(details.Latitude), orNull(details.Longitude), orNull(details.Altitude));
                 }
 
                 if (categorizer != null) {
@@ -140,21 +135,6 @@ namespace Exporter {
                 if (!existing.Contains(name))
                     execute(connection, "ALTER TABLE images ADD COLUMN " + name + " " + type + ";");
             }
-        }
-
-        //images whose details were already read, with the time the image was last changed then
-        private static Dictionary<int, string> readKnownImages(SqliteConnection connection) {
-            Dictionary<int, string> known = new Dictionary<int, string>();
-
-            using SqliteCommand select = connection.CreateCommand();
-            select.CommandText = "SELECT number, changed_at FROM images WHERE changed_at IS NOT NULL;";
-
-            using SqliteDataReader reader = select.ExecuteReader();
-
-            while (reader.Read())
-                known[reader.GetInt32(0)] = reader.GetString(1);
-
-            return known;
         }
 
         private static void execute(SqliteConnection connection, string sql) {
