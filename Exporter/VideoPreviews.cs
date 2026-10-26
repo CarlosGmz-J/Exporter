@@ -6,14 +6,14 @@ namespace Exporter {
     //takes screenshots spread over a copied video and saves them as <previews>\<number>\0.png, 1.png, ...
     //The screenshots are made by ffmpeg.exe, which is searched next to the app and then in the PATH.
     public static class VideoPreviews {
-        //a 1 minute video gets 5 previews, a 10 minute video 20, in between and above it grows linearly
+        //a 1 minute video gets 5 previews, a 10 minute video 20, in between it grows linearly and longer videos keep 20
         public static int GetCount(TimeSpan length) {
             double minutes = length.TotalMinutes;
 
             if (minutes <= 1)
                 return 5;
 
-            return (int)Math.Round(5 + (minutes - 1) * 15 / 9);
+            return Math.Min(20, (int)Math.Round(5 + (minutes - 1) * 15 / 9));
         }
 
         public static string GetFolder(string previews, int number) {
