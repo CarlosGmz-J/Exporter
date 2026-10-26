@@ -32,6 +32,12 @@ namespace Exporter {
         private readonly TextBox folderBox = new TextBox { Dock = DockStyle.Fill, Text = "Bilder" };
         private readonly CheckBox overwriteBox = new CheckBox { Text = "vorhandene überschreiben", AutoSize = true, Anchor = AnchorStyles.Left };
 
+        private readonly TextBox descriptionsBox = new TextBox { Dock = DockStyle.Fill };
+        private readonly TextBox sameTagsBox = new TextBox { Dock = DockStyle.Fill };
+        private readonly TextBox personsBox = new TextBox { Dock = DockStyle.Fill };
+        private readonly TextBox tagsBox = new TextBox { Dock = DockStyle.Fill };
+        private readonly List<Button> fileButtons = new List<Button>();
+
         private readonly Button copyButton = new Button { Text = "Kopieren", AutoSize = true, Enabled = false };
         private readonly Button cancelButton = new Button { Text = "Abbrechen", AutoSize = true, Enabled = false };
         private readonly ProgressBar progressBar = new ProgressBar { Dock = DockStyle.Fill };
@@ -47,8 +53,8 @@ namespace Exporter {
 
             Text = "Bilder auf Datenträger kopieren";
             Width = 720;
-            Height = 300;
-            MinimumSize = new Size(600, 280);
+            Height = 420;
+            MinimumSize = new Size(600, 400);
 
             sourceBox.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "hiddenStorerFolder");
 
@@ -56,7 +62,7 @@ namespace Exporter {
                 Dock = DockStyle.Fill,
                 Padding = new Padding(10),
                 ColumnCount = 4,
-                RowCount = 7
+                RowCount = 11
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -83,12 +89,17 @@ namespace Exporter {
             layout.Controls.Add(overwriteBox, 2, 3);
             layout.SetColumnSpan(overwriteBox, 2);
 
-            layout.Controls.Add(progressBar, 0, 4);
-            layout.SetColumnSpan(progressBar, 2);
-            layout.Controls.Add(copyButton, 2, 4);
-            layout.Controls.Add(cancelButton, 3, 4);
+            addFileRow(layout, 4, "Beschreibungen (optional):", descriptionsBox);
+            addFileRow(layout, 5, "Gleiche Tags:", sameTagsBox);
+            addFileRow(layout, 6, "Personen:", personsBox);
+            addFileRow(layout, 7, "Tags:", tagsBox);
 
-            layout.Controls.Add(statusLabel, 0, 5);
+            layout.Controls.Add(progressBar, 0, 8);
+            layout.SetColumnSpan(progressBar, 2);
+            layout.Controls.Add(copyButton, 2, 8);
+            layout.Controls.Add(cancelButton, 3, 8);
+
+            layout.Controls.Add(statusLabel, 0, 9);
             layout.SetColumnSpan(statusLabel, 4);
 
             Controls.Add(layout);
@@ -102,6 +113,26 @@ namespace Exporter {
             cancelButton.Click += (s, e) => cancel?.Cancel();
 
             refreshDrives();
+        }
+
+        private void addFileRow(TableLayoutPanel layout, int row, string text, TextBox box) {
+            Button browse = new Button { Text = "...", AutoSize = true };
+
+            browse.Click += (s, e) => {
+                using OpenFileDialog dialog = new OpenFileDialog {
+                    Title = text.TrimEnd(':'),
+                    Filter = "Textdateien|*.txt;*.csv|Alle Dateien|*.*"
+                };
+
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                    box.Text = dialog.FileName;
+            };
+
+            fileButtons.Add(browse);
+
+            layout.Controls.Add(label(text), 0, row);
+            layout.Controls.Add(box, 1, row);
+            layout.Controls.Add(browse, 2, row);
         }
 
         private static Label label(string text) {
@@ -234,6 +265,27 @@ namespace Exporter {
                     return;
             }
 
+            DescriptionCategorizer? categorizer = null;
+            string descriptionsFile = descriptionsBox.Text.Trim();
+
+            if (descriptionsFile.Length > 0) {
+                string[] files = { descriptionsFile, sameTagsBox.Text.Trim(), personsBox.Text.Trim(), tagsBox.Text.Trim() };
+
+                foreach (string file in files) {
+                    if (file.Length > 0 && !File.Exists(file)) {
+                        MessageBox.Show(this, "Die Datei gibt es nicht:\n" + file, "Beschreibungen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                }
+
+                try {
+                    categorizer = DescriptionCategorizer.Load(files[0], files[1], files[2], files[3]);
+                } catch (Exception e) {
+                    MessageBox.Show(this, "Die Beschreibungen konnten nicht eingelesen werden:\n" + e.Message, "Beschreibungen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+
             setCopying(true);
             progressBar.Maximum = toCopy.Count;
             progressBar.Value = 0;
@@ -256,6 +308,18 @@ namespace Exporter {
                 else
                     text += ".";
 
+                if (categorizer != null) {
+                    try {
+                        string csv = Path.Combine(destination, "beschreibungen.csv");
+
+                        await Task.Run(() => categorizer.WriteCsv(csv, toCopy.Select(image => image.Number)));
+
+                        text += " Beschreibungen in beschreibungen.csv gespeichert.";
+                    } catch (Exception e) {
+                        text += " Beschreibungen konnten nicht gespeichert werden: " + e.Message;
+                    }
+                }
+
                 statusLabel.Text = text;
             } catch (Exception e) {
                 statusLabel.Text = "Fehler beim Kopieren: " + e.Message;
@@ -277,6 +341,12 @@ namespace Exporter {
             allDrivesBox.Enabled = !copying;
             folderBox.Enabled = !copying;
             overwriteBox.Enabled = !copying;
+            descriptionsBox.Enabled = !copying;
+            sameTagsBox.Enabled = !copying;
+            personsBox.Enabled = !copying;
+            tagsBox.Enabled = !copying;
+            foreach (Button button in fileButtons)
+                button.Enabled = !copying;
             copyButton.Enabled = !copying;
             cancelButton.Enabled = copying;
         }
