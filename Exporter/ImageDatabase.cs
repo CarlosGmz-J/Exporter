@@ -1,0 +1,184 @@
+using Microsoft.Data.Sqlite;
+using Categories = Exporter.DescriptionCategorizer.Categories;
+using StoredImage = Exporter.SchuleImageStore.StoredImage;
+
+namespace Exporter {
+    //Stores the copied images with their categorized descriptions and details in a SQLite database
+    //next to the images, so even with very many images it can be searched quickly.
+    public static class ImageDatabase {
+        private const string schema = @"
+            CREATE TABLE IF NOT EXISTS images (number INTEGER PRIMARY KEY, file TEXT);
+            CREATE TABLE IF NOT EXISTS persons (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE);
+            CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE);
+            CREATE TABLE IF NOT EXISTS image_persons (image INTEGER NOT NULL REFERENCES images(number), person INTEGER NOT NULL REFERENCES persons(id), PRIMARY KEY (image, person));
+            CREATE TABLE IF NOT EXISTS image_tags (image INTEGER NOT NULL REFERENCES images(number), tag INTEGER NOT NULL REFERENCES tags(id), PRIMARY KEY (image, tag));
+            CREATE TABLE IF NOT EXISTS free_texts (image INTEGER NOT NULL REFERENCES images(number), text TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS image_persons_person ON image_persons(person);
+            CREATE INDEX IF NOT EXISTS image_tags_tag ON image_tags(tag);
+            CREATE INDEX IF NOT EXISTS free_texts_image ON free_texts(image);";
+
+        //columns that were added later, databases from older versions get them added
+        private static readonly (string Name, string Type)[] imageColumns = {
+            ("stored_at", "TEXT"),
+            ("changed_at", "TEXT"),
+            ("size", "INTEGER"),
+            ("width", "INTEGER"),
+            ("height", "INTEGER"),
+            ("format", "TEXT"),
+            ("taken_at", "TEXT"),
+            ("camera_make", "TEXT"),
+            ("camera_model", "TEXT"),
+            ("orientation", "TEXT"),
+            ("latitude", "REAL"),
+            ("longitude", "REAL"),
+            ("altitude", "REAL")
+        };
+
+        private const string dateFormat = "yyyy-MM-dd HH:mm:ss";
+
+        //Writes every image: the descriptions are always replaced (when a categorizer is given),
+        //size, resolution and metadata (date taken, camera, orientation, gps) are only read again when the image changed in the hiddenStorerFolder.
+        public static void Write(string file, DescriptionCategorizer? categorizer, IReadOnlyList<(StoredImage Image, string FileName)> images, IProgress<int> progress, CancellationToken token) {
+            SqliteConnectionStringBuilder builder = new SqliteConnectionStringBuilder {
+                DataSource = file,
+                Mode = SqliteOpenMode.ReadWriteCreate,
+                Pooling = false
+            };
+
+            using SqliteConnection connection = new SqliteConnection(builder.ToString());
+            connection.Open();
+
+            execute(connection, schema);
+            addMissingColumns(connection);
+
+            Dictionary<int, string> known = readKnownImages(connection);
+
+            using SqliteTransaction transaction = connection.BeginTransaction();
+
+            SqliteCommand clearDescription = command(connection, transaction,
+                "DELETE FROM image_persons WHERE image = $image; DELETE FROM image_tags WHERE image = $image; DELETE FROM free_texts WHERE image = $image;",
+                "$image");
+            SqliteCommand addImage = command(connection, transaction,
+                "INSERT INTO images (number, file, stored_at) VALUES ($image, $file, $stored) ON CONFLICT(number) DO UPDATE SET file = excluded.file, stored_at = excluded.stored_at;",
+                "$image", "$file", "$stored");
+            SqliteCommand setDetails = command(connection, transaction,
+                "UPDATE images SET changed_at = $changed, size = $size, width = $width, height = $height, format = $format, taken_at = $taken, " +
+                "camera_make = $make, camera_model = $model, orientation = $orientation, latitude = $latitude, longitude = $longitude, altitude = $altitude WHERE number = $image;",
+                "$image", "$changed", "$size", "$width", "$height", "$format", "$taken", "$make", "$model", "$orientation", "$latitude", "$longitude", "$altitude");
+            SqliteCommand addPerson = command(connection, transaction,
+                "INSERT OR IGNORE INTO persons (name) VALUES ($name); INSERT OR IGNORE INTO image_persons (image, person) SELECT $image, id FROM persons WHERE name = $name;",
+                "$image", "$name");
+            SqliteCommand addTag = command(connection, transaction,
+                "INSERT OR IGNORE INTO tags (name) VALUES ($name); INSERT OR IGNORE INTO image_tags (image, tag) SELECT $image, id FROM tags WHERE name = $name;",
+                "$image", "$name");
+            SqliteCommand addFreeText = command(connection, transaction,
+                "INSERT INTO free_texts (image, text) VALUES ($image, $name);",
+                "$image", "$name");
+
+            for (int i = 0; i < images.Count; i++) {
+                if (token.IsCancellationRequested)
+                    break;
+
+                (StoredImage image, string fileName) = images[i];
+                int number = image.Number;
+
+                //the folder of the image is created when it is saved in the hiddenStorerFolder (like Image.getAge in SchuleApi)
+                string storedAt = System.IO.Directory.GetCreationTime(Path.GetDirectoryName(image.FilePath)!).ToString(dateFormat);
+                string changedAt = File.GetLastWriteTime(image.FilePath).ToString(dateFormat);
+
+                run(addImage, number, fileName, storedAt);
+
+                string? knownChange;
+                if (!known.TryGetValue(number, out knownChange) || knownChange != changedAt) {
+                    byte[]? bytes = SchuleImageStore.ReadFileByteShift(image.FilePath);
+
+                    if (bytes != null) {
+                        ImageDetails details = ImageDetails.Read(bytes);
+
+                        run(setDetails, number, changedAt, details.Size, orNull(details.Width), orNull(details.Height), details.Format,
+                            orNull(details.TakenAt?.ToString(dateFormat)), orNull(details.CameraMake), orNull(details.CameraModel), orNull(details.Orientation),
+                            orNull(details.Latitude), orNull(details.Longitude), orNull(details.Altitude));
+                    }
+                }
+
+                if (categorizer != null) {
+                    Categories categories = categorizer.Categorize(number);
+
+                    run(clearDescription, number);
+
+                    foreach (string person in categories.Persons)
+                        run(addPerson, number, person);
+                    foreach (string tag in categories.Tags)
+                        run(addTag, number, tag);
+                    foreach (string freeText in categories.FreeTexts)
+                        run(addFreeText, number, freeText);
+                }
+
+                progress.Report(i + 1);
+            }
+
+            transaction.Commit();
+        }
+
+        private static object orNull(object? value) {
+            return value ?? DBNull.Value;
+        }
+
+        private static void addMissingColumns(SqliteConnection connection) {
+            HashSet<string> existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            using (SqliteCommand info = connection.CreateCommand()) {
+                info.CommandText = "PRAGMA table_info(images);";
+
+                using SqliteDataReader reader = info.ExecuteReader();
+
+                while (reader.Read())
+                    existing.Add(reader.GetString(1));
+            }
+
+            foreach ((string name, string type) in imageColumns) {
+                if (!existing.Contains(name))
+                    execute(connection, "ALTER TABLE images ADD COLUMN " + name + " " + type + ";");
+            }
+        }
+
+        //images whose details were already read, with the time the image was last changed then
+        private static Dictionary<int, string> readKnownImages(SqliteConnection connection) {
+            Dictionary<int, string> known = new Dictionary<int, string>();
+
+            using SqliteCommand select = connection.CreateCommand();
+            select.CommandText = "SELECT number, changed_at FROM images WHERE changed_at IS NOT NULL;";
+
+            using SqliteDataReader reader = select.ExecuteReader();
+
+            while (reader.Read())
+                known[reader.GetInt32(0)] = reader.GetString(1);
+
+            return known;
+        }
+
+        private static void execute(SqliteConnection connection, string sql) {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = sql;
+            command.ExecuteNonQuery();
+        }
+
+        private static SqliteCommand command(SqliteConnection connection, SqliteTransaction transaction, string sql, params string[] parameters) {
+            SqliteCommand command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = sql;
+
+            foreach (string parameter in parameters)
+                command.Parameters.Add(new SqliteParameter { ParameterName = parameter });
+
+            return command;
+        }
+
+        private static void run(SqliteCommand command, params object[] values) {
+            for (int i = 0; i < values.Length; i++)
+                command.Parameters[i].Value = values[i];
+
+            command.ExecuteNonQuery();
+        }
+    }
+}

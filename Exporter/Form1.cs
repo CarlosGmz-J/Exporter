@@ -30,7 +30,6 @@ namespace Exporter {
         private readonly CheckBox allDrivesBox = new CheckBox { Text = "alle Laufwerke", AutoSize = true, Anchor = AnchorStyles.Left };
 
         private readonly TextBox folderBox = new TextBox { Dock = DockStyle.Fill, Text = "Bilder" };
-        private readonly CheckBox overwriteBox = new CheckBox { Text = "vorhandene überschreiben", AutoSize = true, Anchor = AnchorStyles.Left };
 
         private readonly TextBox descriptionsBox = new TextBox { Dock = DockStyle.Fill };
         private readonly TextBox sameTagsBox = new TextBox { Dock = DockStyle.Fill };
@@ -38,7 +37,8 @@ namespace Exporter {
         private readonly TextBox tagsBox = new TextBox { Dock = DockStyle.Fill };
         private readonly List<Button> fileButtons = new List<Button>();
 
-        private readonly Button copyButton = new Button { Text = "Kopieren", AutoSize = true, Enabled = false };
+        private readonly Button updateButton = new Button { Text = "Nur neue kopieren", AutoSize = true, Enabled = false };
+        private readonly Button copyButton = new Button { Text = "Alle neu kopieren", AutoSize = true, Enabled = false };
         private readonly Button cancelButton = new Button { Text = "Abbrechen", AutoSize = true, Enabled = false };
         private readonly ProgressBar progressBar = new ProgressBar { Dock = DockStyle.Fill };
 
@@ -86,8 +86,8 @@ namespace Exporter {
 
             layout.Controls.Add(label("Ordner auf dem Ziel:"), 0, 3);
             layout.Controls.Add(folderBox, 1, 3);
-            layout.Controls.Add(overwriteBox, 2, 3);
-            layout.SetColumnSpan(overwriteBox, 2);
+            layout.Controls.Add(updateButton, 2, 3);
+            layout.Controls.Add(copyButton, 3, 3);
 
             addFileRow(layout, 4, "Beschreibungen (optional):", descriptionsBox);
             addFileRow(layout, 5, "Gleiche Tags:", sameTagsBox);
@@ -95,8 +95,7 @@ namespace Exporter {
             addFileRow(layout, 7, "Tags:", tagsBox);
 
             layout.Controls.Add(progressBar, 0, 8);
-            layout.SetColumnSpan(progressBar, 2);
-            layout.Controls.Add(copyButton, 2, 8);
+            layout.SetColumnSpan(progressBar, 3);
             layout.Controls.Add(cancelButton, 3, 8);
 
             layout.Controls.Add(statusLabel, 0, 9);
@@ -109,7 +108,9 @@ namespace Exporter {
             filterBox.TextChanged += (s, e) => applyFilter();
             refreshDrivesButton.Click += (s, e) => refreshDrives();
             allDrivesBox.CheckedChanged += (s, e) => refreshDrives();
-            copyButton.Click += async (s, e) => await copyImages();
+            //only new images are copied, the database is updated for all images
+            updateButton.Click += async (s, e) => await copyImages(false);
+            copyButton.Click += async (s, e) => await copyImages(true);
             cancelButton.Click += (s, e) => cancel?.Cancel();
 
             refreshDrives();
@@ -166,6 +167,7 @@ namespace Exporter {
             }
 
             loadButton.Enabled = false;
+            updateButton.Enabled = false;
             copyButton.Enabled = false;
             statusLabel.Text = "Bilder werden eingelesen...";
 
@@ -190,6 +192,7 @@ namespace Exporter {
             images = store.GetImages(filterBox.Text.Trim());
 
             countLabel.Text = images.Count + " von " + store.Count + " Bildern";
+            updateButton.Enabled = images.Count > 0;
             copyButton.Enabled = images.Count > 0;
         }
 
@@ -224,7 +227,7 @@ namespace Exporter {
                 statusLabel.Text = allDrivesBox.Checked ? "Kein Laufwerk gefunden." : "Kein USB-Stick gefunden. Stick einstecken oder \"alle Laufwerke\" anhaken.";
         }
 
-        private async Task copyImages() {
+        private async Task copyImages(bool overwrite) {
             if (store == null || images.Count == 0)
                 return;
 
@@ -243,9 +246,7 @@ namespace Exporter {
             }
 
             List<StoredImage> toCopy = images.ToList();
-            bool overwrite = overwriteBox.Checked;
-
-            long needed = ImageCopier.GetSize(toCopy);
+            long needed = ImageCopier.GetSize(toCopy, destination, overwrite);
             long free;
 
             try {
@@ -289,11 +290,15 @@ namespace Exporter {
             setCopying(true);
             progressBar.Maximum = toCopy.Count;
             progressBar.Value = 0;
-            statusLabel.Text = "Kopiere " + toCopy.Count + " Bilder nach " + destination + " ...";
 
             cancel = new CancellationTokenSource();
             CancellationToken token = cancel.Token;
-            Progress<int> progress = new Progress<int>(done => progressBar.Value = done);
+
+            string phase = "Kopiere Bilder";
+            Progress<int> progress = new Progress<int>(done => {
+                progressBar.Value = Math.Min(done, progressBar.Maximum);
+                statusLabel.Text = phase + ": " + done + " von " + progressBar.Maximum + " (" + done * 100 / Math.Max(1, progressBar.Maximum) + " %)";
+            });
 
             try {
                 ImageCopier.Result result = await Task.Run(() => ImageCopier.Copy(toCopy, destination, overwrite, progress, token));
@@ -308,15 +313,22 @@ namespace Exporter {
                 else
                     text += ".";
 
-                if (categorizer != null) {
+                if (!result.Cancelled) {
                     try {
                         string database = Path.Combine(destination, "bilder.db");
 
-                        await Task.Run(() => DescriptionDatabase.Write(database, categorizer, result.Files));
+                        phase = "Aktualisiere Datenbank";
+                        progressBar.Maximum = Math.Max(1, result.Files.Count);
+                        progressBar.Value = 0;
 
-                        text += " Beschreibungen in bilder.db gespeichert.";
+                        await Task.Run(() => ImageDatabase.Write(database, categorizer, result.Files, progress, token));
+
+                        if (token.IsCancellationRequested)
+                            text += " Datenbank nur teilweise aktualisiert (abgebrochen).";
+                        else
+                            text += categorizer != null ? " Datenbank mit Beschreibungen aktualisiert." : " Datenbank aktualisiert (ohne Beschreibungen).";
                     } catch (Exception e) {
-                        text += " Beschreibungen konnten nicht gespeichert werden: " + e.Message;
+                        text += " Datenbank konnte nicht gespeichert werden: " + e.Message;
                     }
                 }
 
@@ -340,13 +352,13 @@ namespace Exporter {
             refreshDrivesButton.Enabled = !copying;
             allDrivesBox.Enabled = !copying;
             folderBox.Enabled = !copying;
-            overwriteBox.Enabled = !copying;
             descriptionsBox.Enabled = !copying;
             sameTagsBox.Enabled = !copying;
             personsBox.Enabled = !copying;
             tagsBox.Enabled = !copying;
             foreach (Button button in fileButtons)
                 button.Enabled = !copying;
+            updateButton.Enabled = !copying;
             copyButton.Enabled = !copying;
             cancelButton.Enabled = copying;
         }

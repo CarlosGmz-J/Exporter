@@ -10,14 +10,31 @@ namespace Exporter {
             public bool Cancelled;
             public string? FirstError;
             //images that are on the destination now, with their file name
-            public List<(int Number, string FileName)> Files = new List<(int Number, string FileName)>();
+            public List<(StoredImage Image, string FileName)> Files = new List<(StoredImage Image, string FileName)>();
+        }
+
+        private static readonly string[] extensions = { ".jpg", ".png", ".gif", ".bmp" };
+
+        //the file of the image on the destination, if it was copied before
+        private static string? findCopied(string destination, int number) {
+            foreach (string extension in extensions) {
+                string file = Path.Combine(destination, "image_" + number + extension);
+
+                if (File.Exists(file))
+                    return file;
+            }
+
+            return null;
         }
 
         //the stored files are as big as the real images, only every byte is shifted
-        public static long GetSize(IEnumerable<StoredImage> images) {
+        public static long GetSize(IEnumerable<StoredImage> images, string destination, bool overwrite) {
             long size = 0;
 
             foreach (StoredImage image in images) {
+                if (!overwrite && findCopied(destination, image.Number) != null)
+                    continue;
+
                 FileInfo file = new FileInfo(image.FilePath);
 
                 if (file.Exists)
@@ -41,21 +58,24 @@ namespace Exporter {
                 StoredImage image = images[i];
 
                 try {
-                    byte[]? bytes = SchuleImageStore.ReadFileByteShift(image.FilePath);
+                    string? copied = overwrite ? null : findCopied(destination, image.Number);
 
-                    if (bytes == null) {
-                        fail(result, "Bild " + image.Number + " konnte nicht gelesen werden.");
+                    if (copied != null) {
+                        //already on the destination, it does not have to be read
+                        result.Skipped++;
+                        result.Files.Add((image, Path.GetFileName(copied)));
                     } else {
-                        string target = Path.Combine(destination, "image_" + image.Number + getExtension(bytes));
+                        byte[]? bytes = SchuleImageStore.ReadFileByteShift(image.FilePath);
 
-                        if (File.Exists(target) && !overwrite) {
-                            result.Skipped++;
+                        if (bytes == null) {
+                            fail(result, "Bild " + image.Number + " konnte nicht gelesen werden.");
                         } else {
+                            string target = Path.Combine(destination, "image_" + image.Number + GetExtension(bytes));
+
                             File.WriteAllBytes(target, bytes);
                             result.Copied++;
+                            result.Files.Add((image, Path.GetFileName(target)));
                         }
-
-                        result.Files.Add((image.Number, Path.GetFileName(target)));
                     }
                 } catch (IOException e) when (isDiskFull(e)) {
                     fail(result, "Der Datenträger ist voll.");
@@ -85,7 +105,7 @@ namespace Exporter {
         }
 
         //SchuleApi saves bitmaps as jpeg, but images added as bytes can be anything
-        private static string getExtension(byte[] bytes) {
+        public static string GetExtension(byte[] bytes) {
             if (startsWith(bytes, 0x89, 0x50, 0x4E, 0x47))
                 return ".png";
             if (startsWith(bytes, 0x47, 0x49, 0x46))
