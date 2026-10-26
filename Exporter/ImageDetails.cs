@@ -64,11 +64,11 @@ namespace Exporter {
                 TakenAt = taken;
 
             if (gps != null) {
-                GeoLocation? location;
+                GeoLocation? location = gps.GetGeoLocation();
 
-                if (gps.TryGetGeoLocation(out location) && location != null) {
-                    Latitude = location.Value.Latitude;
-                    Longitude = location.Value.Longitude;
+                if (location != null) {
+                    Latitude = location.Latitude;
+                    Longitude = location.Longitude;
                 }
 
                 Rational altitude;
