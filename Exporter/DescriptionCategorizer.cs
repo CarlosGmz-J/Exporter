@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace Exporter {
     //Splits the descriptions of the images into persons, tags and free texts.
     //
@@ -17,6 +19,11 @@ namespace Exporter {
         private readonly HashSet<string> persons;
         private readonly HashSet<string> tags;
 
+        //only for the debug file
+        private readonly Dictionary<int, List<string>> rawLines = new Dictionary<int, List<string>>();
+        private readonly List<string> skippedLines = new List<string>();
+        private string[] files = new string[4];
+
         private DescriptionCategorizer(Dictionary<int, List<string>> descriptions, Dictionary<string, string> sameTags, HashSet<string> persons, HashSet<string> tags) {
             this.descriptions = descriptions;
             this.sameTags = sameTags;
@@ -28,11 +35,106 @@ namespace Exporter {
         public static DescriptionCategorizer Load(string descriptionsFile, string sameTagsFile, string personsFile, string tagsFile) {
             Dictionary<string, string> sameTags = readSameTags(sameTagsFile);
 
-            return new DescriptionCategorizer(
-                readDescriptions(descriptionsFile),
+            Dictionary<int, List<string>> rawLines = new Dictionary<int, List<string>>();
+            List<string> skippedLines = new List<string>();
+
+            DescriptionCategorizer categorizer = new DescriptionCategorizer(
+                readDescriptions(descriptionsFile, rawLines, skippedLines),
                 sameTags,
                 readList(personsFile, sameTags),
                 readList(tagsFile, sameTags));
+
+            foreach (KeyValuePair<int, List<string>> pair in rawLines)
+                categorizer.rawLines[pair.Key] = pair.Value;
+
+            categorizer.skippedLines.AddRange(skippedLines);
+            categorizer.files = new[] { descriptionsFile, sameTagsFile, personsFile, tagsFile };
+
+            return categorizer;
+        }
+
+        //Writes step by step how the descriptions of the first images are split,
+        //so it can be checked why an entry ends up as person, tag or free text.
+        public void WriteDebugFile(string file, IEnumerable<int> numbers, int max = 100) {
+            StringBuilder text = new StringBuilder();
+
+            text.AppendLine("Debug der Beschreibungen, " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            text.AppendLine("Einträge stehen in [Klammern], damit Leerzeichen sichtbar sind. Unsichtbare Zeichen werden als <U+XXXX> gezeigt.");
+            text.AppendLine();
+
+            string[] names = { "Beschreibungen", "Gleiche Tags", "Personen", "Tags" };
+            for (int i = 0; i < files.Length; i++)
+                text.AppendLine(names[i] + ": " + (string.IsNullOrWhiteSpace(files[i]) ? "(keine Datei)" : files[i]));
+
+            text.AppendLine();
+            text.AppendLine("Eingelesen: " + descriptions.Count + " Bilder mit Beschreibung, " + sameTags.Count + " Einträge in Gruppen gleicher Tags, " + persons.Count + " Personen, " + tags.Count + " Tags");
+            text.AppendLine("Personen (erste 30): " + string.Join(" ", persons.Take(30).Select(show)));
+            text.AppendLine("Tags (erste 30): " + string.Join(" ", tags.Take(30).Select(show)));
+            text.AppendLine("Gleiche Tags (erste 30): " + string.Join(" ", sameTags.Take(30).Select(pair => show(pair.Key) + "->" + show(pair.Value))));
+
+            if (skippedLines.Count > 0) {
+                text.AppendLine();
+                text.AppendLine(skippedLines.Count + " Zeilen der Beschreibungen ohne Bildnummer am Anfang wurden ignoriert, die ersten:");
+                foreach (string line in skippedLines.Take(20))
+                    text.AppendLine("  " + show(line));
+            }
+
+            List<int> list = numbers.ToList();
+            List<int> withDescription = list.Where(descriptions.ContainsKey).Take(max).ToList();
+            int without = list.Count(number => !descriptions.ContainsKey(number));
+
+            text.AppendLine();
+            text.AppendLine(list.Count + " Bilder in diesem Lauf, davon " + without + " ohne Zeile in der Beschreibungsdatei.");
+            if (without > 0)
+                text.AppendLine("Bildnummern ohne Beschreibung (erste 30): " + string.Join(", ", list.Where(number => !descriptions.ContainsKey(number)).Take(30)));
+
+            foreach (int number in withDescription) {
+                text.AppendLine();
+                text.AppendLine("=== Bild " + number);
+
+                foreach (string line in rawLines[number])
+                    text.AppendLine("Zeile: " + show(line));
+
+                foreach (string entry in descriptions[number]) {
+                    string tag;
+                    string step = show(entry);
+
+                    if (sameTags.TryGetValue(entry, out tag!))
+                        step += " -> gleiche Tags -> " + show(tag);
+                    else
+                        tag = entry;
+
+                    string listed;
+
+                    if (persons.TryGetValue(tag, out listed!))
+                        step += " -> Person " + show(listed);
+                    else if (tags.TryGetValue(tag, out listed!))
+                        step += " -> Tag " + show(listed);
+                    else
+                        step += " -> Freitext (weder in Personen noch in Tags gefunden)";
+
+                    text.AppendLine("  " + step);
+                }
+
+                Categories categories = Categorize(number);
+                text.AppendLine("  Ergebnis: Personen " + string.Join(", ", categories.Persons) + " | Tags " + string.Join(", ", categories.Tags) + " | Freitexte " + string.Join(", ", categories.FreeTexts));
+            }
+
+            File.WriteAllText(file, text.ToString(), new UTF8Encoding(true));
+        }
+
+        //shows the text in brackets, invisible or unusual characters are written as their code
+        private static string show(string text) {
+            StringBuilder shown = new StringBuilder("[");
+
+            foreach (char c in text) {
+                if (char.IsControl(c) || c == '\u00A0' || c == '\uFEFF' || c == '\uFFFD' || c == '\u200B')
+                    shown.Append("<U+" + ((int)c).ToString("X4") + ">");
+                else
+                    shown.Append(c);
+            }
+
+            return shown.Append(']').ToString();
         }
 
         public int Count => descriptions.Count;
@@ -85,7 +187,7 @@ namespace Exporter {
                 .Where(line => line.Length > 0);
         }
 
-        private static Dictionary<int, List<string>> readDescriptions(string file) {
+        private static Dictionary<int, List<string>> readDescriptions(string file, Dictionary<int, List<string>> rawLines, List<string> skippedLines) {
             Dictionary<int, List<string>> descriptions = new Dictionary<int, List<string>>();
 
             foreach (string line in readLines(file)) {
@@ -96,8 +198,19 @@ namespace Exporter {
 
                 int number;
 
-                if (end == 0 || !int.TryParse(line.Substring(0, end), out number))
+                if (end == 0 || !int.TryParse(line.Substring(0, end), out number)) {
+                    skippedLines.Add(line);
                     continue;
+                }
+
+                List<string> raw;
+
+                if (!rawLines.TryGetValue(number, out raw!)) {
+                    raw = new List<string>();
+                    rawLines[number] = raw;
+                }
+
+                raw.Add(line);
 
                 List<string> entries;
 

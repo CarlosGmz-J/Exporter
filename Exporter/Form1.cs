@@ -367,6 +367,17 @@ namespace Exporter {
 
                         await Task.Run(() => ImageDatabase.Write(database, categorizer, result.Files, progress, token));
 
+                        string debugFile = Path.Combine(Path.GetDirectoryName(database)!, "beschreibungen_debug.txt");
+
+                        try {
+                            if (categorizer != null)
+                                await Task.Run(() => categorizer.WriteDebugFile(debugFile, result.Files.Select(copied => copied.Image.Number)));
+                            else
+                                File.WriteAllText(debugFile, "Keine Beschreibungsdatei ausgewählt, deshalb wurden keine Personen, Tags und Freitexte geschrieben.");
+                        } catch (Exception e) {
+                            Console.WriteLine(e.Message);
+                        }
+
                         if (token.IsCancellationRequested)
                             text += " Datenbank nur teilweise aktualisiert (abgebrochen).";
                         else
