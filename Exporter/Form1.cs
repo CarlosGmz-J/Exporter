@@ -358,7 +358,8 @@ namespace Exporter {
 
                 if (!result.Cancelled) {
                     try {
-                        string database = Path.Combine(destination, "bilder.db");
+                        //the database is next to the image folder, e.g. E:\bilder.db for E:\Bilder
+                        string database = Path.Combine(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(destination)) ?? destination, "bilder.db");
 
                         phase = "Aktualisiere Datenbank";
                         progressBar.Maximum = Math.Max(1, result.Files.Count);
