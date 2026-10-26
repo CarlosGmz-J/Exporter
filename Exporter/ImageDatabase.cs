@@ -143,7 +143,7 @@ namespace Exporter {
 
         //same as Write, for the videos: name, length, date, size, resolution, recording date and format,
         //and the description split into persons, tags and free texts
-        public static void WriteVideos(string file, DescriptionCategorizer categorizer, IReadOnlyList<(StoredVideo Video, string FileName, string? Thumbnail)> videos, IProgress<int> progress, CancellationToken token) {
+        public static void WriteVideos(string file, DescriptionCategorizer categorizer, IReadOnlyList<(StoredVideo Video, string FileName)> videos, IProgress<int> progress, CancellationToken token) {
             using SqliteConnection connection = open(file);
 
             using SqliteTransaction transaction = connection.BeginTransaction();
@@ -170,7 +170,7 @@ namespace Exporter {
                 if (token.IsCancellationRequested)
                     break;
 
-                (StoredVideo video, string fileName, string? thumbnail) = videos[i];
+                (StoredVideo video, string fileName) = videos[i];
                 int number = video.Number;
 
                 //the folder of the video is created when it is saved (like Video.load in SchuleApi)
@@ -179,7 +179,8 @@ namespace Exporter {
 
                 VideoDetails details = VideoDetails.Read(video.VideoFile);
 
-                run(addVideo, number, fileName, orNull(thumbnail), video.Name, video.LengthSeconds, storedAt, info.Exists ? (object)info.Length : DBNull.Value,
+                //the title pictures are not copied anymore, the previews replace them
+                run(addVideo, number, fileName, DBNull.Value, video.Name, video.LengthSeconds, storedAt, info.Exists ? (object)info.Length : DBNull.Value,
                     orNull(details.Width), orNull(details.Height), Path.GetExtension(fileName).TrimStart('.'), orNull(details.TakenAt?.ToString(dateFormat)));
 
                 Categories categories = categorizer.Categorize(number);

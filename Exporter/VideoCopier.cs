@@ -1,7 +1,7 @@
 using StoredVideo = Exporter.SchuleVideoStore.StoredVideo;
 
 namespace Exporter {
-    //writes the videos of a SchuleVideoStore as normal video files (and their thumbnails as jpeg) to another folder,
+    //writes the videos of a SchuleVideoStore as normal video files to another folder,
     //and screenshots of every video as previews to a second folder
     public static class VideoCopier {
         public class Result {
@@ -14,8 +14,8 @@ namespace Exporter {
             public string? FirstError;
             public int PreviewsFailed;
             public string? FirstPreviewError;
-            //videos that are on the destination now, with the file names of the video and the thumbnail
-            public List<(StoredVideo Video, string FileName, string? Thumbnail)> Files = new List<(StoredVideo Video, string FileName, string? Thumbnail)>();
+            //videos that are on the destination now, with the file name of the video
+            public List<(StoredVideo Video, string FileName)> Files = new List<(StoredVideo Video, string FileName)>();
         }
 
         private static readonly string[] extensions = { ".mp4", ".mkv", ".avi" };
@@ -61,12 +61,10 @@ namespace Exporter {
                 if (!overwrite && (findCopied(destination, video.Number) != null || existsOld(destination, video.Number)))
                     continue;
 
-                foreach (string file in new[] { video.VideoFile, video.ThumbnailFile }) {
-                    FileInfo info = new FileInfo(file);
+                FileInfo info = new FileInfo(video.VideoFile);
 
-                    if (info.Exists)
-                        size += info.Length;
-                }
+                if (info.Exists)
+                    size += info.Length;
             }
 
             return size;
@@ -96,8 +94,6 @@ namespace Exporter {
                         renamed = copied != null;
                     }
 
-                    string? thumbnail = copyThumbnail(video, destination, overwrite);
-
                     if (copied != null) {
                         if (renamed)
                             result.Renamed++;
@@ -119,7 +115,7 @@ namespace Exporter {
                     }
 
                     if (target != null) {
-                        result.Files.Add((video, Path.GetFileName(target), thumbnail));
+                        result.Files.Add((video, Path.GetFileName(target)));
 
                         if (!createPreviews(result, video, target, previews, overwrite, token)) {
                             result.Cancelled = true;
@@ -186,22 +182,6 @@ namespace Exporter {
 
                 return true;
             }
-        }
-
-        private static string? copyThumbnail(StoredVideo video, string destination, bool overwrite) {
-            string target = Path.Combine(destination, "video_" + video.Number + ".jpg");
-
-            if (File.Exists(target) && !overwrite)
-                return Path.GetFileName(target);
-
-            byte[]? bytes = SchuleImageStore.ReadFileByteShift(video.ThumbnailFile);
-
-            if (bytes == null)
-                return null;
-
-            File.WriteAllBytes(target, bytes);
-
-            return Path.GetFileName(target);
         }
 
         //SchuleApi saves the videos as mp4, other containers are recognized by their first bytes
