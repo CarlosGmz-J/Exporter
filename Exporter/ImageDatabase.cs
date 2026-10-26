@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Categories = Exporter.DescriptionCategorizer.Categories;
 using StoredImage = Exporter.SchuleImageStore.StoredImage;
+using StoredVideo = Exporter.SchuleVideoStore.StoredVideo;
 
 namespace Exporter {
     //Stores the copied images with their categorized descriptions and details in a SQLite database
@@ -15,7 +16,14 @@ namespace Exporter {
             CREATE TABLE IF NOT EXISTS free_texts (image INTEGER NOT NULL REFERENCES images(number), text TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS image_persons_person ON image_persons(person);
             CREATE INDEX IF NOT EXISTS image_tags_tag ON image_tags(tag);
-            CREATE INDEX IF NOT EXISTS free_texts_image ON free_texts(image);";
+            CREATE INDEX IF NOT EXISTS free_texts_image ON free_texts(image);
+            CREATE TABLE IF NOT EXISTS videos (number INTEGER PRIMARY KEY, file TEXT, thumbnail TEXT, name TEXT, length_seconds INTEGER, stored_at TEXT, size INTEGER);
+            CREATE TABLE IF NOT EXISTS video_persons (video INTEGER NOT NULL REFERENCES videos(number), person INTEGER NOT NULL REFERENCES persons(id), PRIMARY KEY (video, person));
+            CREATE TABLE IF NOT EXISTS video_tags (video INTEGER NOT NULL REFERENCES videos(number), tag INTEGER NOT NULL REFERENCES tags(id), PRIMARY KEY (video, tag));
+            CREATE TABLE IF NOT EXISTS video_free_texts (video INTEGER NOT NULL REFERENCES videos(number), text TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS video_persons_person ON video_persons(person);
+            CREATE INDEX IF NOT EXISTS video_tags_tag ON video_tags(tag);
+            CREATE INDEX IF NOT EXISTS video_free_texts_video ON video_free_texts(video);";
 
         //One row per image with all persons, tags and free texts joined by commas, for looking at the data.
         //The data itself is in the link tables, every image can have any number of persons, tags and free texts.
@@ -28,7 +36,15 @@ namespace Exporter {
                 (SELECT group_concat(f.text, ', ') FROM free_texts f WHERE f.image = i.number) AS free_texts,
                 i.stored_at, i.changed_at, i.size, i.width, i.height, i.format, i.taken_at,
                 i.camera_make, i.camera_model, i.orientation, i.latitude, i.longitude, i.altitude
-            FROM images i;";
+            FROM images i;
+            DROP VIEW IF EXISTS video_overview;
+            CREATE VIEW video_overview AS
+            SELECT v.number, v.file, v.thumbnail, v.name,
+                (SELECT group_concat(p.name, ', ') FROM video_persons vp JOIN persons p ON p.id = vp.person WHERE vp.video = v.number) AS persons,
+                (SELECT group_concat(t.name, ', ') FROM video_tags vt JOIN tags t ON t.id = vt.tag WHERE vt.video = v.number) AS tags,
+                (SELECT group_concat(f.text, ', ') FROM video_free_texts f WHERE f.video = v.number) AS free_texts,
+                v.length_seconds, v.stored_at, v.size
+            FROM videos v;";
 
         //columns that were added later, databases from older versions get them added
         private static readonly (string Name, string Type)[] imageColumns = {
@@ -52,18 +68,7 @@ namespace Exporter {
         //Writes every image: the descriptions (when a categorizer is given), size, resolution and
         //metadata (date taken, camera, orientation, gps) are always read again and replaced.
         public static void Write(string file, DescriptionCategorizer? categorizer, IReadOnlyList<(StoredImage Image, string FileName)> images, IProgress<int> progress, CancellationToken token) {
-            SqliteConnectionStringBuilder builder = new SqliteConnectionStringBuilder {
-                DataSource = file,
-                Mode = SqliteOpenMode.ReadWriteCreate,
-                Pooling = false
-            };
-
-            using SqliteConnection connection = new SqliteConnection(builder.ToString());
-            connection.Open();
-
-            execute(connection, schema);
-            addMissingColumns(connection);
-            execute(connection, overview);
+            using SqliteConnection connection = open(file);
 
             using SqliteTransaction transaction = connection.BeginTransaction();
 
@@ -127,6 +132,77 @@ namespace Exporter {
             }
 
             transaction.Commit();
+        }
+
+        //same as Write, for the videos: name, length, date and size, and the description split into persons, tags and free texts
+        public static void WriteVideos(string file, DescriptionCategorizer categorizer, IReadOnlyList<(StoredVideo Video, string FileName, string? Thumbnail)> videos, IProgress<int> progress, CancellationToken token) {
+            using SqliteConnection connection = open(file);
+
+            using SqliteTransaction transaction = connection.BeginTransaction();
+
+            SqliteCommand clearDescription = command(connection, transaction,
+                "DELETE FROM video_persons WHERE video = $video; DELETE FROM video_tags WHERE video = $video; DELETE FROM video_free_texts WHERE video = $video;",
+                "$video");
+            SqliteCommand addVideo = command(connection, transaction,
+                "INSERT INTO videos (number, file, thumbnail, name, length_seconds, stored_at, size) VALUES ($video, $file, $thumbnail, $name, $length, $stored, $size) " +
+                "ON CONFLICT(number) DO UPDATE SET file = excluded.file, thumbnail = excluded.thumbnail, name = excluded.name, length_seconds = excluded.length_seconds, stored_at = excluded.stored_at, size = excluded.size;",
+                "$video", "$file", "$thumbnail", "$name", "$length", "$stored", "$size");
+            SqliteCommand addPerson = command(connection, transaction,
+                "INSERT OR IGNORE INTO persons (name) VALUES ($name); INSERT OR IGNORE INTO video_persons (video, person) SELECT $video, id FROM persons WHERE name = $name;",
+                "$video", "$name");
+            SqliteCommand addTag = command(connection, transaction,
+                "INSERT OR IGNORE INTO tags (name) VALUES ($name); INSERT OR IGNORE INTO video_tags (video, tag) SELECT $video, id FROM tags WHERE name = $name;",
+                "$video", "$name");
+            SqliteCommand addFreeText = command(connection, transaction,
+                "INSERT INTO video_free_texts (video, text) VALUES ($video, $name);",
+                "$video", "$name");
+
+            for (int i = 0; i < videos.Count; i++) {
+                if (token.IsCancellationRequested)
+                    break;
+
+                (StoredVideo video, string fileName, string? thumbnail) = videos[i];
+                int number = video.Number;
+
+                //the folder of the video is created when it is saved (like Video.load in SchuleApi)
+                string storedAt = System.IO.Directory.GetCreationTime(video.Folder).ToString(dateFormat);
+                FileInfo info = new FileInfo(video.VideoFile);
+
+                run(addVideo, number, fileName, orNull(thumbnail), video.Name, video.LengthSeconds, storedAt, info.Exists ? (object)info.Length : DBNull.Value);
+
+                Categories categories = categorizer.CategorizeText(video.Description);
+
+                run(clearDescription, number);
+
+                foreach (string person in categories.Persons)
+                    run(addPerson, number, person);
+                foreach (string tag in categories.Tags)
+                    run(addTag, number, tag);
+                foreach (string freeText in categories.FreeTexts)
+                    run(addFreeText, number, freeText);
+
+                progress.Report(i + 1);
+            }
+
+            transaction.Commit();
+        }
+
+        //opens the database and creates or updates the tables
+        private static SqliteConnection open(string file) {
+            SqliteConnectionStringBuilder builder = new SqliteConnectionStringBuilder {
+                DataSource = file,
+                Mode = SqliteOpenMode.ReadWriteCreate,
+                Pooling = false
+            };
+
+            SqliteConnection connection = new SqliteConnection(builder.ToString());
+            connection.Open();
+
+            execute(connection, schema);
+            addMissingColumns(connection);
+            execute(connection, overview);
+
+            return connection;
         }
 
         private static object orNull(object? value) {

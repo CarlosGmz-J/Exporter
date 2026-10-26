@@ -71,7 +71,7 @@ namespace Exporter {
             try {
                 bytes = File.ReadAllBytes(path);
 
-                shiftBytes(bytes, -1);
+                ShiftBytes(bytes, bytes.Length, -1);
             } catch (Exception e) {
                 Console.WriteLine(e.StackTrace);
             }
@@ -79,20 +79,20 @@ namespace Exporter {
             return bytes;
         }
 
-        //adds delta (1 or -1) to every byte, 255 + 1 wraps to 0 and 0 - 1 wraps to 255
-        private static void shiftBytes(byte[] bytes, int delta) {
+        //adds delta (1 or -1) to the first length bytes, 255 + 1 wraps to 0 and 0 - 1 wraps to 255
+        internal static void ShiftBytes(byte[] bytes, int length, int delta) {
             int i = 0;
 
             if (Vector.IsHardwareAccelerated) {
                 Vector<byte> step = new Vector<byte>((byte)(delta & 0xFF));
                 int width = Vector<byte>.Count;
 
-                for (; i <= bytes.Length - width; i += width) {
+                for (; i <= length - width; i += width) {
                     (new Vector<byte>(bytes, i) + step).CopyTo(bytes, i);
                 }
             }
 
-            for (; i < bytes.Length; i++) {
+            for (; i < length; i++) {
                 bytes[i] = unchecked((byte)(bytes[i] + delta));
             }
         }

@@ -11,6 +11,8 @@ namespace Exporter {
         public string? SameTags { get; set; }
         public string? Persons { get; set; }
         public string? Tags { get; set; }
+        public string? VideoSource { get; set; }
+        public bool CopyVideos { get; set; }
 
         private static string file => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Exporter", "settings.json");
 

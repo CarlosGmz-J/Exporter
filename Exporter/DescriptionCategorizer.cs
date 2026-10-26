@@ -145,11 +145,21 @@ namespace Exporter {
         public int Count => descriptions.Count;
 
         public Categories Categorize(int number) {
-            Categories categories = new Categories();
             List<string>? entries;
 
             if (!descriptions.TryGetValue(number, out entries))
-                return categories;
+                return new Categories();
+
+            return categorize(entries);
+        }
+
+        //for descriptions that are not in the descriptions file, e.g. of the videos
+        public Categories CategorizeText(string description) {
+            return categorize(splitEntries(description.Replace('\r', ',').Replace('\n', ',')));
+        }
+
+        private Categories categorize(List<string> entries) {
+            Categories categories = new Categories();
 
             foreach (string entry in entries) {
                 string tag;
