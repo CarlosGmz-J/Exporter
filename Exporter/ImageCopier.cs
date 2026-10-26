@@ -9,6 +9,8 @@ namespace Exporter {
             public int Failed;
             public bool Cancelled;
             public string? FirstError;
+            //images that are on the destination now, with their file name
+            public List<(int Number, string FileName)> Files = new List<(int Number, string FileName)>();
         }
 
         //the stored files are as big as the real images, only every byte is shifted
@@ -52,6 +54,8 @@ namespace Exporter {
                             File.WriteAllBytes(target, bytes);
                             result.Copied++;
                         }
+
+                        result.Files.Add((image.Number, Path.GetFileName(target)));
                     }
                 } catch (IOException e) when (isDiskFull(e)) {
                     fail(result, "Der Datenträger ist voll.");

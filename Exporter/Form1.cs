@@ -310,11 +310,11 @@ namespace Exporter {
 
                 if (categorizer != null) {
                     try {
-                        string csv = Path.Combine(destination, "beschreibungen.csv");
+                        string database = Path.Combine(destination, "bilder.db");
 
-                        await Task.Run(() => categorizer.WriteCsv(csv, toCopy.Select(image => image.Number)));
+                        await Task.Run(() => DescriptionDatabase.Write(database, categorizer, result.Files));
 
-                        text += " Beschreibungen in beschreibungen.csv gespeichert.";
+                        text += " Beschreibungen in bilder.db gespeichert.";
                     } catch (Exception e) {
                         text += " Beschreibungen konnten nicht gespeichert werden: " + e.Message;
                     }

@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace Exporter {
     //Splits the descriptions of the images into persons, tags and free texts.
     //
@@ -61,42 +59,6 @@ namespace Exporter {
             }
 
             return categories;
-        }
-
-        //writes beschreibungen.csv next to the images, rows of images that are already in it are replaced
-        public void WriteCsv(string file, IEnumerable<int> numbers) {
-            SortedDictionary<int, string> rows = new SortedDictionary<int, string>();
-
-            if (File.Exists(file)) {
-                foreach (string line in File.ReadAllLines(file).Skip(1)) {
-                    int separator = line.IndexOf(';');
-                    int number;
-
-                    if (separator > 0 && int.TryParse(line.Substring(0, separator), out number))
-                        rows[number] = line;
-                }
-            }
-
-            foreach (int number in numbers) {
-                Categories categories = Categorize(number);
-
-                rows[number] = number + ";" + csvField(categories.Persons) + ";" + csvField(categories.Tags) + ";" + csvField(categories.FreeTexts);
-            }
-
-            List<string> lines = new List<string> { "Bild;Personen;Tags;Freitexte" };
-            lines.AddRange(rows.Values);
-
-            //with BOM so Excel shows the umlauts correctly
-            File.WriteAllLines(file, lines, new UTF8Encoding(true));
-        }
-
-        private static string csvField(List<string> entries) {
-            string text = string.Join(", ", entries);
-
-            if (text.Contains(';') || text.Contains('"'))
-                text = "\"" + text.Replace("\"", "\"\"") + "\"";
-
-            return text;
         }
 
         private static void addOnce(List<string> list, string entry) {
