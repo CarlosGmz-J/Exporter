@@ -92,7 +92,7 @@ namespace Exporter {
             layout.Controls.Add(updateButton, 2, 3);
             layout.Controls.Add(copyButton, 3, 3);
 
-            addFileRow(layout, 4, "Beschreibungen (optional):", descriptionsBox);
+            addFileRow(layout, 4, "Beschreibungen (leer = aus SchuleApi):", descriptionsBox);
             addFileRow(layout, 5, "Gleiche Tags:", sameTagsBox);
             addFileRow(layout, 6, "Personen:", personsBox);
             addFileRow(layout, 7, "Tags:", tagsBox);
@@ -309,24 +309,23 @@ namespace Exporter {
             }
 
             DescriptionCategorizer? categorizer = null;
-            string descriptionsFile = descriptionsBox.Text.Trim();
+            string[] files = { descriptionsBox.Text.Trim(), sameTagsBox.Text.Trim(), personsBox.Text.Trim(), tagsBox.Text.Trim() };
 
-            if (descriptionsFile.Length > 0) {
-                string[] files = { descriptionsFile, sameTagsBox.Text.Trim(), personsBox.Text.Trim(), tagsBox.Text.Trim() };
-
-                foreach (string file in files) {
-                    if (file.Length > 0 && !File.Exists(file)) {
-                        MessageBox.Show(this, "Die Datei gibt es nicht:\n" + file, "Beschreibungen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        return;
-                    }
-                }
-
-                try {
-                    categorizer = DescriptionCategorizer.Load(files[0], files[1], files[2], files[3]);
-                } catch (Exception e) {
-                    MessageBox.Show(this, "Die Beschreibungen konnten nicht eingelesen werden:\n" + e.Message, "Beschreibungen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            foreach (string file in files) {
+                if (file.Length > 0 && !File.Exists(file)) {
+                    MessageBox.Show(this, "Die Datei gibt es nicht:\n" + file, "Beschreibungen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
+            }
+
+            try {
+                //without a descriptions file the descriptions saved in SchuleApi are used
+                IEnumerable<(int, string)> schuleApiDescriptions = store.GetImages("").Select(image => (image.Number, image.Description));
+
+                categorizer = DescriptionCategorizer.Load(files[0], files[1], files[2], files[3], schuleApiDescriptions);
+            } catch (Exception e) {
+                MessageBox.Show(this, "Die Beschreibungen konnten nicht eingelesen werden:\n" + e.Message, "Beschreibungen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
             }
 
             saveSettings();

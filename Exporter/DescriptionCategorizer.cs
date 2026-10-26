@@ -31,15 +31,20 @@ namespace Exporter {
             this.tags = tags;
         }
 
-        //every file except the descriptions can be left empty
-        public static DescriptionCategorizer Load(string descriptionsFile, string sameTagsFile, string personsFile, string tagsFile) {
+        //Every file can be left empty. Without a descriptions file the descriptions that are saved
+        //in SchuleApi for every image (imageFolder\<number>\2) are used, entries separated by commas.
+        public static DescriptionCategorizer Load(string descriptionsFile, string sameTagsFile, string personsFile, string tagsFile, IEnumerable<(int Number, string Description)> schuleApiDescriptions) {
             Dictionary<string, string> sameTags = readSameTags(sameTagsFile);
 
             Dictionary<int, List<string>> rawLines = new Dictionary<int, List<string>>();
             List<string> skippedLines = new List<string>();
 
+            Dictionary<int, List<string>> descriptions = string.IsNullOrWhiteSpace(descriptionsFile)
+                ? readSchuleApiDescriptions(schuleApiDescriptions, rawLines)
+                : readDescriptions(descriptionsFile, rawLines, skippedLines);
+
             DescriptionCategorizer categorizer = new DescriptionCategorizer(
-                readDescriptions(descriptionsFile, rawLines, skippedLines),
+                descriptions,
                 sameTags,
                 readList(personsFile, sameTags),
                 readList(tagsFile, sameTags));
@@ -64,7 +69,7 @@ namespace Exporter {
 
             string[] names = { "Beschreibungen", "Gleiche Tags", "Personen", "Tags" };
             for (int i = 0; i < files.Length; i++)
-                text.AppendLine(names[i] + ": " + (string.IsNullOrWhiteSpace(files[i]) ? "(keine Datei)" : files[i]));
+                text.AppendLine(names[i] + ": " + (string.IsNullOrWhiteSpace(files[i]) ? (i == 0 ? "(keine Datei, Beschreibungen aus der SchuleApi)" : "(keine Datei)") : files[i]));
 
             text.AppendLine();
             text.AppendLine("Eingelesen: " + descriptions.Count + " Bilder mit Beschreibung, " + sameTags.Count + " Einträge in Gruppen gleicher Tags, " + persons.Count + " Personen, " + tags.Count + " Tags");
@@ -220,6 +225,22 @@ namespace Exporter {
                 }
 
                 entries.AddRange(splitEntries(line.Substring(end)));
+            }
+
+            return descriptions;
+        }
+
+        private static Dictionary<int, List<string>> readSchuleApiDescriptions(IEnumerable<(int Number, string Description)> images, Dictionary<int, List<string>> rawLines) {
+            Dictionary<int, List<string>> descriptions = new Dictionary<int, List<string>>();
+
+            foreach ((int number, string description) in images) {
+                List<string> entries = splitEntries(description.Replace('\r', ',').Replace('\n', ','));
+
+                if (entries.Count == 0)
+                    continue;
+
+                descriptions[number] = entries;
+                rawLines[number] = new List<string> { description };
             }
 
             return descriptions;
