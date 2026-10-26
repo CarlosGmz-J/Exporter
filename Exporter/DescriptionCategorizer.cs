@@ -50,10 +50,13 @@ namespace Exporter {
                 if (!sameTags.TryGetValue(entry, out tag!))
                     tag = entry;
 
-                if (persons.Contains(tag))
-                    addOnce(categories.Persons, tag);
-                else if (tags.Contains(tag))
-                    addOnce(categories.Tags, tag);
+                //the spelling of the persons and tags file is used
+                string listed;
+
+                if (persons.TryGetValue(tag, out listed!))
+                    addOnce(categories.Persons, listed);
+                else if (tags.TryGetValue(tag, out listed!))
+                    addOnce(categories.Tags, listed);
                 else
                     addOnce(categories.FreeTexts, tag);
             }
