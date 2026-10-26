@@ -48,6 +48,9 @@ namespace Exporter {
         private List<StoredImage> images = new List<StoredImage>();
         private CancellationTokenSource? cancel;
 
+        //drive of the last run, selected again as soon as it is plugged in
+        private string? savedDrive;
+
         public Form1() {
             InitializeComponent();
 
@@ -113,7 +116,46 @@ namespace Exporter {
             copyButton.Click += async (s, e) => await copyImages(true);
             cancelButton.Click += (s, e) => cancel?.Cancel();
 
+            loadSettings();
             refreshDrives();
+        }
+
+        private void loadSettings() {
+            Settings settings = Settings.Load();
+
+            if (!string.IsNullOrWhiteSpace(settings.Source))
+                sourceBox.Text = settings.Source;
+            if (!string.IsNullOrWhiteSpace(settings.Folder))
+                folderBox.Text = settings.Folder;
+
+            descriptionsBox.Text = settings.Descriptions ?? "";
+            sameTagsBox.Text = settings.SameTags ?? "";
+            personsBox.Text = settings.Persons ?? "";
+            tagsBox.Text = settings.Tags ?? "";
+
+            savedDrive = settings.Drive;
+            allDrivesBox.Checked = settings.AllDrives;
+        }
+
+        private void saveSettings() {
+            string? drive = (driveBox.SelectedItem as DriveItem)?.Drive.Name ?? savedDrive;
+
+            new Settings {
+                Source = sourceBox.Text.Trim(),
+                Drive = drive,
+                AllDrives = allDrivesBox.Checked,
+                Folder = folderBox.Text.Trim(),
+                Descriptions = descriptionsBox.Text.Trim(),
+                SameTags = sameTagsBox.Text.Trim(),
+                Persons = personsBox.Text.Trim(),
+                Tags = tagsBox.Text.Trim()
+            }.Save();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e) {
+            saveSettings();
+
+            base.OnFormClosing(e);
         }
 
         private void addFileRow(TableLayoutPanel layout, int row, string text, TextBox box) {
@@ -197,7 +239,7 @@ namespace Exporter {
         }
 
         private void refreshDrives() {
-            string? selected = (driveBox.SelectedItem as DriveItem)?.Drive.Name;
+            string? selected = (driveBox.SelectedItem as DriveItem)?.Drive.Name ?? savedDrive;
 
             driveBox.Items.Clear();
 
@@ -287,6 +329,7 @@ namespace Exporter {
                 }
             }
 
+            saveSettings();
             setCopying(true);
             progressBar.Maximum = toCopy.Count;
             progressBar.Value = 0;
