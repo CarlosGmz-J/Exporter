@@ -1,9 +1,10 @@
 using System.Text;
 
 namespace Exporter {
-    //Splits the descriptions of the images into persons, tags and free texts.
+    //Splits the descriptions of the images or videos into persons, tags and free texts.
     //
-    //descriptions file: one line per image, "<number> entry, entry, entry"
+    //descriptions:      read from SchuleApi like it does it (image: imageFolder\<number>\2, video: videoFolder\<number>\4),
+    //                   the entries are separated by commas
     //same tags file:    one group per line, "main tag, other spelling, other spelling",
     //                   every entry of a group is replaced by the first one
     //persons/tags file: entries separated by new lines or commas
@@ -15,90 +16,108 @@ namespace Exporter {
         }
 
         private readonly Dictionary<int, List<string>> descriptions;
+        private readonly Dictionary<int, string> rawDescriptions;
         private readonly Dictionary<string, string> sameTags;
         private readonly HashSet<string> persons;
         private readonly HashSet<string> tags;
 
         //only for the debug file
-        private readonly Dictionary<int, List<string>> rawLines = new Dictionary<int, List<string>>();
-        private readonly List<string> skippedLines = new List<string>();
-        private string[] files = new string[4];
+        private readonly string[] files;
 
-        private DescriptionCategorizer(Dictionary<int, List<string>> descriptions, Dictionary<string, string> sameTags, HashSet<string> persons, HashSet<string> tags) {
+        private DescriptionCategorizer(Dictionary<int, List<string>> descriptions, Dictionary<int, string> rawDescriptions, Dictionary<string, string> sameTags, HashSet<string> persons, HashSet<string> tags, string[] files) {
             this.descriptions = descriptions;
+            this.rawDescriptions = rawDescriptions;
             this.sameTags = sameTags;
             this.persons = persons;
             this.tags = tags;
+            this.files = files;
         }
 
-        //Every file can be left empty. Without a descriptions file the descriptions that are saved
-        //in SchuleApi for every image (imageFolder\<number>\2) are used, entries separated by commas.
-        public static DescriptionCategorizer Load(string descriptionsFile, string sameTagsFile, string personsFile, string tagsFile, IEnumerable<(int Number, string Description)> schuleApiDescriptions) {
+        //every file can be left empty
+        public static DescriptionCategorizer Load(string sameTagsFile, string personsFile, string tagsFile, IEnumerable<(int Number, string Description)> schuleApiDescriptions) {
             Dictionary<string, string> sameTags = readSameTags(sameTagsFile);
+            Dictionary<int, List<string>> descriptions = new Dictionary<int, List<string>>();
+            Dictionary<int, string> rawDescriptions = new Dictionary<int, string>();
 
-            Dictionary<int, List<string>> rawLines = new Dictionary<int, List<string>>();
-            List<string> skippedLines = new List<string>();
+            foreach ((int number, string description) in schuleApiDescriptions) {
+                List<string> entries = splitEntries(description.Replace('\r', ',').Replace('\n', ','));
 
-            Dictionary<int, List<string>> descriptions = string.IsNullOrWhiteSpace(descriptionsFile)
-                ? readSchuleApiDescriptions(schuleApiDescriptions, rawLines)
-                : readDescriptions(descriptionsFile, rawLines, skippedLines);
+                if (entries.Count == 0)
+                    continue;
 
-            DescriptionCategorizer categorizer = new DescriptionCategorizer(
+                descriptions[number] = entries;
+                rawDescriptions[number] = description;
+            }
+
+            return new DescriptionCategorizer(
                 descriptions,
+                rawDescriptions,
                 sameTags,
                 readList(personsFile, sameTags),
-                readList(tagsFile, sameTags));
-
-            foreach (KeyValuePair<int, List<string>> pair in rawLines)
-                categorizer.rawLines[pair.Key] = pair.Value;
-
-            categorizer.skippedLines.AddRange(skippedLines);
-            categorizer.files = new[] { descriptionsFile, sameTagsFile, personsFile, tagsFile };
-
-            return categorizer;
+                readList(tagsFile, sameTags),
+                new[] { sameTagsFile, personsFile, tagsFile });
         }
 
-        //Writes step by step how the descriptions of the first images are split,
+        public int Count => descriptions.Count;
+
+        public Categories Categorize(int number) {
+            Categories categories = new Categories();
+            List<string>? entries;
+
+            if (!descriptions.TryGetValue(number, out entries))
+                return categories;
+
+            foreach (string entry in entries) {
+                string tag;
+
+                if (!sameTags.TryGetValue(entry, out tag!))
+                    tag = entry;
+
+                //the spelling of the persons and tags file is used
+                string listed;
+
+                if (persons.TryGetValue(tag, out listed!))
+                    addOnce(categories.Persons, listed);
+                else if (tags.TryGetValue(tag, out listed!))
+                    addOnce(categories.Tags, listed);
+                else
+                    addOnce(categories.FreeTexts, tag);
+            }
+
+            return categories;
+        }
+
+        //Writes step by step how the descriptions of the first images or videos are split,
         //so it can be checked why an entry ends up as person, tag or free text.
-        public void WriteDebugFile(string file, IEnumerable<int> numbers, int max = 100) {
+        public void WriteDebugFile(string file, string kind, IEnumerable<int> numbers, int max = 100) {
             StringBuilder text = new StringBuilder();
 
-            text.AppendLine("Debug der Beschreibungen, " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-            text.AppendLine("Einträge stehen in [Klammern], damit Leerzeichen sichtbar sind. Unsichtbare Zeichen werden als <U+XXXX> gezeigt.");
+            text.AppendLine("Debug der Beschreibungen (" + kind + "), " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            text.AppendLine("Die Beschreibungen kommen aus der SchuleApi. Einträge stehen in [Klammern], damit Leerzeichen sichtbar sind. Unsichtbare Zeichen werden als <U+XXXX> gezeigt.");
             text.AppendLine();
 
-            string[] names = { "Beschreibungen", "Gleiche Tags", "Personen", "Tags" };
+            string[] names = { "Gleiche Tags", "Personen", "Tags" };
             for (int i = 0; i < files.Length; i++)
-                text.AppendLine(names[i] + ": " + (string.IsNullOrWhiteSpace(files[i]) ? (i == 0 ? "(keine Datei, Beschreibungen aus der SchuleApi)" : "(keine Datei)") : files[i]));
+                text.AppendLine(names[i] + ": " + (string.IsNullOrWhiteSpace(files[i]) ? "(keine Datei)" : files[i]));
 
             text.AppendLine();
-            text.AppendLine("Eingelesen: " + descriptions.Count + " Bilder mit Beschreibung, " + sameTags.Count + " Einträge in Gruppen gleicher Tags, " + persons.Count + " Personen, " + tags.Count + " Tags");
+            text.AppendLine("Eingelesen: " + descriptions.Count + " " + kind + " mit Beschreibung, " + sameTags.Count + " Einträge in Gruppen gleicher Tags, " + persons.Count + " Personen, " + tags.Count + " Tags");
             text.AppendLine("Personen (erste 30): " + string.Join(" ", persons.Take(30).Select(show)));
             text.AppendLine("Tags (erste 30): " + string.Join(" ", tags.Take(30).Select(show)));
             text.AppendLine("Gleiche Tags (erste 30): " + string.Join(" ", sameTags.Take(30).Select(pair => show(pair.Key) + "->" + show(pair.Value))));
 
-            if (skippedLines.Count > 0) {
-                text.AppendLine();
-                text.AppendLine(skippedLines.Count + " Zeilen der Beschreibungen ohne Bildnummer am Anfang wurden ignoriert, die ersten:");
-                foreach (string line in skippedLines.Take(20))
-                    text.AppendLine("  " + show(line));
-            }
-
             List<int> list = numbers.ToList();
-            List<int> withDescription = list.Where(descriptions.ContainsKey).Take(max).ToList();
-            int without = list.Count(number => !descriptions.ContainsKey(number));
+            List<int> without = list.Where(number => !descriptions.ContainsKey(number)).ToList();
 
             text.AppendLine();
-            text.AppendLine(list.Count + " Bilder in diesem Lauf, davon " + without + " ohne Zeile in der Beschreibungsdatei.");
-            if (without > 0)
-                text.AppendLine("Bildnummern ohne Beschreibung (erste 30): " + string.Join(", ", list.Where(number => !descriptions.ContainsKey(number)).Take(30)));
+            text.AppendLine(list.Count + " " + kind + " in diesem Lauf, davon " + without.Count + " ohne Beschreibung.");
+            if (without.Count > 0)
+                text.AppendLine("Nummern ohne Beschreibung (erste 30): " + string.Join(", ", without.Take(30)));
 
-            foreach (int number in withDescription) {
+            foreach (int number in list.Where(descriptions.ContainsKey).Take(max)) {
                 text.AppendLine();
-                text.AppendLine("=== Bild " + number);
-
-                foreach (string line in rawLines[number])
-                    text.AppendLine("Zeile: " + show(line));
+                text.AppendLine("=== Nummer " + number);
+                text.AppendLine("Beschreibung: " + show(rawDescriptions[number]));
 
                 foreach (string entry in descriptions[number]) {
                     string tag;
@@ -133,52 +152,13 @@ namespace Exporter {
             StringBuilder shown = new StringBuilder("[");
 
             foreach (char c in text) {
-                if (char.IsControl(c) || c == '\u00A0' || c == '\uFEFF' || c == '\uFFFD' || c == '\u200B')
+                if (char.IsControl(c) || c == ' ' || c == '﻿' || c == '�' || c == '​')
                     shown.Append("<U+" + ((int)c).ToString("X4") + ">");
                 else
                     shown.Append(c);
             }
 
             return shown.Append(']').ToString();
-        }
-
-        public int Count => descriptions.Count;
-
-        public Categories Categorize(int number) {
-            List<string>? entries;
-
-            if (!descriptions.TryGetValue(number, out entries))
-                return new Categories();
-
-            return categorize(entries);
-        }
-
-        //for descriptions that are not in the descriptions file, e.g. of the videos
-        public Categories CategorizeText(string description) {
-            return categorize(splitEntries(description.Replace('\r', ',').Replace('\n', ',')));
-        }
-
-        private Categories categorize(List<string> entries) {
-            Categories categories = new Categories();
-
-            foreach (string entry in entries) {
-                string tag;
-
-                if (!sameTags.TryGetValue(entry, out tag!))
-                    tag = entry;
-
-                //the spelling of the persons and tags file is used
-                string listed;
-
-                if (persons.TryGetValue(tag, out listed!))
-                    addOnce(categories.Persons, listed);
-                else if (tags.TryGetValue(tag, out listed!))
-                    addOnce(categories.Tags, listed);
-                else
-                    addOnce(categories.FreeTexts, tag);
-            }
-
-            return categories;
         }
 
         private static void addOnce(List<string> list, string entry) {
@@ -200,60 +180,6 @@ namespace Exporter {
             return File.ReadAllLines(file)
                 .Select(line => line.Trim())
                 .Where(line => line.Length > 0);
-        }
-
-        private static Dictionary<int, List<string>> readDescriptions(string file, Dictionary<int, List<string>> rawLines, List<string> skippedLines) {
-            Dictionary<int, List<string>> descriptions = new Dictionary<int, List<string>>();
-
-            foreach (string line in readLines(file)) {
-                int end = 0;
-
-                while (end < line.Length && char.IsDigit(line[end]))
-                    end++;
-
-                int number;
-
-                if (end == 0 || !int.TryParse(line.Substring(0, end), out number)) {
-                    skippedLines.Add(line);
-                    continue;
-                }
-
-                List<string> raw;
-
-                if (!rawLines.TryGetValue(number, out raw!)) {
-                    raw = new List<string>();
-                    rawLines[number] = raw;
-                }
-
-                raw.Add(line);
-
-                List<string> entries;
-
-                if (!descriptions.TryGetValue(number, out entries!)) {
-                    entries = new List<string>();
-                    descriptions[number] = entries;
-                }
-
-                entries.AddRange(splitEntries(line.Substring(end)));
-            }
-
-            return descriptions;
-        }
-
-        private static Dictionary<int, List<string>> readSchuleApiDescriptions(IEnumerable<(int Number, string Description)> images, Dictionary<int, List<string>> rawLines) {
-            Dictionary<int, List<string>> descriptions = new Dictionary<int, List<string>>();
-
-            foreach ((int number, string description) in images) {
-                List<string> entries = splitEntries(description.Replace('\r', ',').Replace('\n', ','));
-
-                if (entries.Count == 0)
-                    continue;
-
-                descriptions[number] = entries;
-                rawLines[number] = new List<string> { description };
-            }
-
-            return descriptions;
         }
 
         private static Dictionary<string, string> readSameTags(string file) {

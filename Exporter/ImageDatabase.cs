@@ -43,7 +43,7 @@ namespace Exporter {
                 (SELECT group_concat(p.name, ', ') FROM video_persons vp JOIN persons p ON p.id = vp.person WHERE vp.video = v.number) AS persons,
                 (SELECT group_concat(t.name, ', ') FROM video_tags vt JOIN tags t ON t.id = vt.tag WHERE vt.video = v.number) AS tags,
                 (SELECT group_concat(f.text, ', ') FROM video_free_texts f WHERE f.video = v.number) AS free_texts,
-                v.length_seconds, v.stored_at, v.size
+                v.length_seconds, v.stored_at, v.size, v.width, v.height, v.format, v.taken_at
             FROM videos v;";
 
         //columns that were added later, databases from older versions get them added
@@ -61,6 +61,13 @@ namespace Exporter {
             ("latitude", "REAL"),
             ("longitude", "REAL"),
             ("altitude", "REAL")
+        };
+
+        private static readonly (string Name, string Type)[] videoColumns = {
+            ("width", "INTEGER"),
+            ("height", "INTEGER"),
+            ("format", "TEXT"),
+            ("taken_at", "TEXT")
         };
 
         private const string dateFormat = "yyyy-MM-dd HH:mm:ss";
@@ -134,7 +141,8 @@ namespace Exporter {
             transaction.Commit();
         }
 
-        //same as Write, for the videos: name, length, date and size, and the description split into persons, tags and free texts
+        //same as Write, for the videos: name, length, date, size, resolution, recording date and format,
+        //and the description split into persons, tags and free texts
         public static void WriteVideos(string file, DescriptionCategorizer categorizer, IReadOnlyList<(StoredVideo Video, string FileName, string? Thumbnail)> videos, IProgress<int> progress, CancellationToken token) {
             using SqliteConnection connection = open(file);
 
@@ -144,9 +152,10 @@ namespace Exporter {
                 "DELETE FROM video_persons WHERE video = $video; DELETE FROM video_tags WHERE video = $video; DELETE FROM video_free_texts WHERE video = $video;",
                 "$video");
             SqliteCommand addVideo = command(connection, transaction,
-                "INSERT INTO videos (number, file, thumbnail, name, length_seconds, stored_at, size) VALUES ($video, $file, $thumbnail, $name, $length, $stored, $size) " +
-                "ON CONFLICT(number) DO UPDATE SET file = excluded.file, thumbnail = excluded.thumbnail, name = excluded.name, length_seconds = excluded.length_seconds, stored_at = excluded.stored_at, size = excluded.size;",
-                "$video", "$file", "$thumbnail", "$name", "$length", "$stored", "$size");
+                "INSERT INTO videos (number, file, thumbnail, name, length_seconds, stored_at, size, width, height, format, taken_at) VALUES ($video, $file, $thumbnail, $name, $length, $stored, $size, $width, $height, $format, $taken) " +
+                "ON CONFLICT(number) DO UPDATE SET file = excluded.file, thumbnail = excluded.thumbnail, name = excluded.name, length_seconds = excluded.length_seconds, stored_at = excluded.stored_at, size = excluded.size, " +
+                "width = excluded.width, height = excluded.height, format = excluded.format, taken_at = excluded.taken_at;",
+                "$video", "$file", "$thumbnail", "$name", "$length", "$stored", "$size", "$width", "$height", "$format", "$taken");
             SqliteCommand addPerson = command(connection, transaction,
                 "INSERT OR IGNORE INTO persons (name) VALUES ($name); INSERT OR IGNORE INTO video_persons (video, person) SELECT $video, id FROM persons WHERE name = $name;",
                 "$video", "$name");
@@ -168,9 +177,12 @@ namespace Exporter {
                 string storedAt = System.IO.Directory.GetCreationTime(video.Folder).ToString(dateFormat);
                 FileInfo info = new FileInfo(video.VideoFile);
 
-                run(addVideo, number, fileName, orNull(thumbnail), video.Name, video.LengthSeconds, storedAt, info.Exists ? (object)info.Length : DBNull.Value);
+                VideoDetails details = VideoDetails.Read(video.VideoFile);
 
-                Categories categories = categorizer.CategorizeText(video.Description);
+                run(addVideo, number, fileName, orNull(thumbnail), video.Name, video.LengthSeconds, storedAt, info.Exists ? (object)info.Length : DBNull.Value,
+                    orNull(details.Width), orNull(details.Height), Path.GetExtension(fileName).TrimStart('.'), orNull(details.TakenAt?.ToString(dateFormat)));
+
+                Categories categories = categorizer.Categorize(number);
 
                 run(clearDescription, number);
 
@@ -199,7 +211,8 @@ namespace Exporter {
             connection.Open();
 
             execute(connection, schema);
-            addMissingColumns(connection);
+            addMissingColumns(connection, "images", imageColumns);
+            addMissingColumns(connection, "videos", videoColumns);
             execute(connection, overview);
 
             return connection;
@@ -209,11 +222,11 @@ namespace Exporter {
             return value ?? DBNull.Value;
         }
 
-        private static void addMissingColumns(SqliteConnection connection) {
+        private static void addMissingColumns(SqliteConnection connection, string table, (string Name, string Type)[] columns) {
             HashSet<string> existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             using (SqliteCommand info = connection.CreateCommand()) {
-                info.CommandText = "PRAGMA table_info(images);";
+                info.CommandText = "PRAGMA table_info(" + table + ");";
 
                 using SqliteDataReader reader = info.ExecuteReader();
 
@@ -221,9 +234,9 @@ namespace Exporter {
                     existing.Add(reader.GetString(1));
             }
 
-            foreach ((string name, string type) in imageColumns) {
+            foreach ((string name, string type) in columns) {
                 if (!existing.Contains(name))
-                    execute(connection, "ALTER TABLE images ADD COLUMN " + name + " " + type + ";");
+                    execute(connection, "ALTER TABLE " + table + " ADD COLUMN " + name + " " + type + ";");
             }
         }
 

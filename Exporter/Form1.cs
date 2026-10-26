@@ -19,6 +19,10 @@ namespace Exporter {
             }
         }
 
+        private readonly RadioButton imagesRadio = new RadioButton { Text = "Bilder", AutoSize = true, Checked = true };
+        private readonly RadioButton videosRadio = new RadioButton { Text = "Videos", AutoSize = true };
+
+        private readonly Label sourceLabel = label("Bilder-Ordner (SchuleApi):");
         private readonly TextBox sourceBox = new TextBox { Dock = DockStyle.Fill };
         private readonly Button browseSourceButton = new Button { Text = "...", AutoSize = true };
         private readonly Button loadButton = new Button { Text = "Einlesen", AutoSize = true };
@@ -30,16 +34,11 @@ namespace Exporter {
         private readonly Button refreshDrivesButton = new Button { Text = "Aktualisieren", AutoSize = true };
         private readonly CheckBox allDrivesBox = new CheckBox { Text = "alle Laufwerke", AutoSize = true, Anchor = AnchorStyles.Left };
 
-        private readonly TextBox folderBox = new TextBox { Dock = DockStyle.Fill, Text = "Bilder" };
+        private readonly TextBox folderBox = new TextBox { Dock = DockStyle.Fill };
 
-        private readonly TextBox descriptionsBox = new TextBox { Dock = DockStyle.Fill };
         private readonly TextBox sameTagsBox = new TextBox { Dock = DockStyle.Fill };
         private readonly TextBox personsBox = new TextBox { Dock = DockStyle.Fill };
         private readonly TextBox tagsBox = new TextBox { Dock = DockStyle.Fill };
-
-        private readonly TextBox videoSourceBox = new TextBox { Dock = DockStyle.Fill };
-        private readonly Button browseVideoSourceButton = new Button { Text = "...", AutoSize = true };
-        private readonly CheckBox copyVideosBox = new CheckBox { Text = "Videos kopieren", AutoSize = true, Anchor = AnchorStyles.Left };
         private readonly List<Button> fileButtons = new List<Button>();
 
         private readonly Button updateButton = new Button { Text = "Nur neue kopieren", AutoSize = true, Enabled = false };
@@ -49,104 +48,122 @@ namespace Exporter {
 
         private readonly Label statusLabel = new Label { AutoSize = true, Dock = DockStyle.Fill };
 
-        private SchuleImageStore? store;
+        private SchuleImageStore? imageStore;
+        private SchuleVideoStore? videoStore;
         private List<StoredImage> images = new List<StoredImage>();
+        private List<StoredVideo> videos = new List<StoredVideo>();
         private CancellationTokenSource? cancel;
+        private bool busy;
+
+        //source folder and folder on the destination of the mode that is not shown at the moment
+        private string otherSource = "";
+        private string otherFolder = "";
 
         //drive of the last run, selected again as soon as it is plugged in
         private string? savedDrive;
 
+        private bool videoMode => videosRadio.Checked;
+        private string kind => videoMode ? "Videos" : "Bilder";
+
         public Form1() {
             InitializeComponent();
 
-            Text = "Bilder auf Datenträger kopieren";
+            Text = "Bilder und Videos auf Datenträger kopieren";
             Width = 720;
-            Height = 460;
-            MinimumSize = new Size(600, 440);
-
-            sourceBox.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "hiddenStorerFolder");
+            Height = 440;
+            MinimumSize = new Size(600, 420);
 
             TableLayoutPanel layout = new TableLayoutPanel {
                 Dock = DockStyle.Fill,
                 Padding = new Padding(10),
                 ColumnCount = 4,
-                RowCount = 12
+                RowCount = 11
             };
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-            layout.Controls.Add(label("Bilder-Ordner (SchuleApi):"), 0, 0);
-            layout.Controls.Add(sourceBox, 1, 0);
-            layout.Controls.Add(browseSourceButton, 2, 0);
-            layout.Controls.Add(loadButton, 3, 0);
+            FlowLayoutPanel modePanel = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+            modePanel.Controls.Add(imagesRadio);
+            modePanel.Controls.Add(videosRadio);
 
-            layout.Controls.Add(label("Suche in Beschreibung:"), 0, 1);
-            layout.Controls.Add(filterBox, 1, 1);
-            layout.Controls.Add(countLabel, 2, 1);
+            layout.Controls.Add(label("Kopieren:"), 0, 0);
+            layout.Controls.Add(modePanel, 1, 0);
+            layout.SetColumnSpan(modePanel, 3);
+
+            layout.Controls.Add(sourceLabel, 0, 1);
+            layout.Controls.Add(sourceBox, 1, 1);
+            layout.Controls.Add(browseSourceButton, 2, 1);
+            layout.Controls.Add(loadButton, 3, 1);
+
+            layout.Controls.Add(label("Suche in Beschreibung:"), 0, 2);
+            layout.Controls.Add(filterBox, 1, 2);
+            layout.Controls.Add(countLabel, 2, 2);
             layout.SetColumnSpan(countLabel, 2);
 
-            layout.Controls.Add(label("Ziel-Laufwerk:"), 0, 2);
-            layout.Controls.Add(driveBox, 1, 2);
-            layout.Controls.Add(refreshDrivesButton, 2, 2);
-            layout.Controls.Add(allDrivesBox, 3, 2);
+            layout.Controls.Add(label("Ziel-Laufwerk:"), 0, 3);
+            layout.Controls.Add(driveBox, 1, 3);
+            layout.Controls.Add(refreshDrivesButton, 2, 3);
+            layout.Controls.Add(allDrivesBox, 3, 3);
 
-            layout.Controls.Add(label("Ordner auf dem Ziel:"), 0, 3);
-            layout.Controls.Add(folderBox, 1, 3);
-            layout.Controls.Add(updateButton, 2, 3);
-            layout.Controls.Add(copyButton, 3, 3);
+            layout.Controls.Add(label("Ordner auf dem Ziel:"), 0, 4);
+            layout.Controls.Add(folderBox, 1, 4);
+            layout.Controls.Add(updateButton, 2, 4);
+            layout.Controls.Add(copyButton, 3, 4);
 
-            addFileRow(layout, 4, "Beschreibungen (leer = aus SchuleApi):", descriptionsBox);
             addFileRow(layout, 5, "Gleiche Tags:", sameTagsBox);
             addFileRow(layout, 6, "Personen:", personsBox);
             addFileRow(layout, 7, "Tags:", tagsBox);
 
-            layout.Controls.Add(label("Video-Ordner (SchuleApi):"), 0, 8);
-            layout.Controls.Add(videoSourceBox, 1, 8);
-            layout.Controls.Add(browseVideoSourceButton, 2, 8);
-            layout.Controls.Add(copyVideosBox, 3, 8);
-
-            layout.Controls.Add(progressBar, 0, 9);
+            layout.Controls.Add(progressBar, 0, 8);
             layout.SetColumnSpan(progressBar, 3);
-            layout.Controls.Add(cancelButton, 3, 9);
+            layout.Controls.Add(cancelButton, 3, 8);
 
-            layout.Controls.Add(statusLabel, 0, 10);
+            layout.Controls.Add(statusLabel, 0, 9);
             layout.SetColumnSpan(statusLabel, 4);
 
             Controls.Add(layout);
 
+            loadSettings();
+
+            videosRadio.CheckedChanged += (s, e) => switchMode();
             browseSourceButton.Click += (s, e) => browseSource();
-            browseVideoSourceButton.Click += (s, e) => browseFolder(videoSourceBox, "Den Ordner wählen, der \"videoFolder\" enthält");
-            loadButton.Click += async (s, e) => await loadImages();
+            loadButton.Click += async (s, e) => await load();
             filterBox.TextChanged += (s, e) => applyFilter();
             refreshDrivesButton.Click += (s, e) => refreshDrives();
             allDrivesBox.CheckedChanged += (s, e) => refreshDrives();
-            //only new images are copied, the database is updated for all images
-            updateButton.Click += async (s, e) => await copyImages(false);
-            copyButton.Click += async (s, e) => await copyImages(true);
+            //only new files are copied, the database is updated for all of them
+            updateButton.Click += async (s, e) => await copy(false);
+            copyButton.Click += async (s, e) => await copy(true);
             cancelButton.Click += (s, e) => cancel?.Cancel();
 
-            loadSettings();
+            showMode();
             refreshDrives();
         }
 
         private void loadSettings() {
             Settings settings = Settings.Load();
 
-            if (!string.IsNullOrWhiteSpace(settings.Source))
-                sourceBox.Text = settings.Source;
-            if (!string.IsNullOrWhiteSpace(settings.Folder))
-                folderBox.Text = settings.Folder;
+            string imageSource = string.IsNullOrWhiteSpace(settings.Source)
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "hiddenStorerFolder")
+                : settings.Source;
+            //SchuleApi keeps the videos in E:\hiddenStorerFolder (SchuleApi.getVideosApi)
+            string videoSource = string.IsNullOrWhiteSpace(settings.VideoSource) ? "E:\\hiddenStorerFolder" : settings.VideoSource;
+            string imageFolder = string.IsNullOrWhiteSpace(settings.Folder) ? "Bilder" : settings.Folder;
+            string videoFolder = string.IsNullOrWhiteSpace(settings.VideoFolder) ? "Videos" : settings.VideoFolder;
 
-            descriptionsBox.Text = settings.Descriptions ?? "";
+            videosRadio.Checked = settings.Mode == "Videos";
+            imagesRadio.Checked = !videosRadio.Checked;
+
+            sourceBox.Text = videoMode ? videoSource : imageSource;
+            folderBox.Text = videoMode ? videoFolder : imageFolder;
+            otherSource = videoMode ? imageSource : videoSource;
+            otherFolder = videoMode ? imageFolder : videoFolder;
+
             sameTagsBox.Text = settings.SameTags ?? "";
             personsBox.Text = settings.Persons ?? "";
             tagsBox.Text = settings.Tags ?? "";
-
-            //SchuleApi keeps the videos in E:\hiddenStorerFolder (SchuleApi.getVideosApi)
-            videoSourceBox.Text = string.IsNullOrWhiteSpace(settings.VideoSource) ? "E:\\hiddenStorerFolder" : settings.VideoSource;
-            copyVideosBox.Checked = settings.CopyVideos;
 
             savedDrive = settings.Drive;
             allDrivesBox.Checked = settings.AllDrives;
@@ -156,16 +173,16 @@ namespace Exporter {
             string? drive = (driveBox.SelectedItem as DriveItem)?.Drive.Name ?? savedDrive;
 
             new Settings {
-                Source = sourceBox.Text.Trim(),
+                Mode = kind,
+                Source = videoMode ? otherSource : sourceBox.Text.Trim(),
+                VideoSource = videoMode ? sourceBox.Text.Trim() : otherSource,
                 Drive = drive,
                 AllDrives = allDrivesBox.Checked,
-                Folder = folderBox.Text.Trim(),
-                Descriptions = descriptionsBox.Text.Trim(),
+                Folder = videoMode ? otherFolder : folderBox.Text.Trim(),
+                VideoFolder = videoMode ? folderBox.Text.Trim() : otherFolder,
                 SameTags = sameTagsBox.Text.Trim(),
                 Persons = personsBox.Text.Trim(),
-                Tags = tagsBox.Text.Trim(),
-                VideoSource = videoSourceBox.Text.Trim(),
-                CopyVideos = copyVideosBox.Checked
+                Tags = tagsBox.Text.Trim()
             }.Save();
         }
 
@@ -173,6 +190,28 @@ namespace Exporter {
             saveSettings();
 
             base.OnFormClosing(e);
+        }
+
+        //the source and destination folder are swapped with the ones of the other mode
+        private void switchMode() {
+            string source = sourceBox.Text;
+            string folder = folderBox.Text;
+
+            sourceBox.Text = otherSource;
+            folderBox.Text = otherFolder;
+            otherSource = source;
+            otherFolder = folder;
+
+            showMode();
+        }
+
+        private void showMode() {
+            sourceLabel.Text = videoMode ? "Video-Ordner (SchuleApi):" : "Bilder-Ordner (SchuleApi):";
+
+            applyFilter();
+
+            if ((videoMode ? (object?)videoStore : imageStore) == null)
+                statusLabel.Text = kind + " noch nicht eingelesen.";
         }
 
         private void addFileRow(TableLayoutPanel layout, int row, string text, TextBox box) {
@@ -208,55 +247,71 @@ namespace Exporter {
         }
 
         private void browseSource() {
-            browseFolder(sourceBox, "Den Ordner wählen, der \"imageFolder\" enthält");
-        }
-
-        private void browseFolder(TextBox box, string description) {
             using FolderBrowserDialog dialog = new FolderBrowserDialog {
-                Description = description,
-                SelectedPath = box.Text
+                Description = videoMode ? "Den Ordner wählen, der \"videoFolder\" enthält" : "Den Ordner wählen, der \"imageFolder\" enthält",
+                SelectedPath = sourceBox.Text
             };
 
             if (dialog.ShowDialog(this) == DialogResult.OK)
-                box.Text = dialog.SelectedPath;
+                sourceBox.Text = dialog.SelectedPath;
         }
 
-        private async Task loadImages() {
+        //reads the images or videos with their descriptions like SchuleApi does
+        private async Task load() {
             string root = sourceBox.Text.Trim();
+            bool loadVideos = videoMode;
 
-                        if (!SchuleImageStore.IsImageStore(root)) {
-                MessageBox.Show(this, "In diesem Ordner gibt es keinen Unterordner \"imageFolder\".", "Bilder einlesen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            //SchuleApi would create an empty folder in a wrong folder, so check it first
+            if (loadVideos ? !SchuleVideoStore.IsVideoStore(root) : !SchuleImageStore.IsImageStore(root)) {
+                MessageBox.Show(this, "In diesem Ordner gibt es keinen Unterordner \"" + (loadVideos ? "videoFolder" : "imageFolder") + "\".", kind + " einlesen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            loadButton.Enabled = false;
-            updateButton.Enabled = false;
-            copyButton.Enabled = false;
-            statusLabel.Text = "Bilder werden eingelesen...";
+            setBusy(true);
+            statusLabel.Text = kind + " werden eingelesen...";
 
             try {
-                store = await Task.Run(() => SchuleImageStore.Load(root));
+                if (loadVideos)
+                    videoStore = await Task.Run(() => SchuleVideoStore.Load(root));
+                else
+                    imageStore = await Task.Run(() => SchuleImageStore.Load(root));
 
-                filterBox.Enabled = true;
-                applyFilter();
-
-                statusLabel.Text = store.Count + " Bilder eingelesen.";
+                statusLabel.Text = (loadVideos ? videoStore!.Count : imageStore!.Count) + " " + (loadVideos ? "Videos" : "Bilder") + " eingelesen.";
             } catch (Exception e) {
                 statusLabel.Text = "Fehler beim Einlesen: " + e.Message;
             } finally {
-                loadButton.Enabled = true;
+                setBusy(false);
             }
         }
 
         private void applyFilter() {
-            if (store == null)
-                return;
+            string filter = filterBox.Text.Trim();
+            int shown = 0;
+            int total = 0;
+            bool loaded;
 
-            images = store.GetImages(filterBox.Text.Trim());
+            if (videoMode) {
+                loaded = videoStore != null;
 
-            countLabel.Text = images.Count + " von " + store.Count + " Bildern";
-            updateButton.Enabled = images.Count > 0;
-            copyButton.Enabled = images.Count > 0;
+                if (videoStore != null) {
+                    videos = videoStore.GetVideos(filter);
+                    shown = videos.Count;
+                    total = videoStore.Count;
+                }
+            } else {
+                loaded = imageStore != null;
+
+                if (imageStore != null) {
+                    images = imageStore.GetImages(filter);
+                    shown = images.Count;
+                    total = imageStore.Count;
+                }
+            }
+
+            countLabel.Text = loaded ? shown + " von " + total + " " + kind : "noch nicht eingelesen";
+            filterBox.Enabled = loaded && !busy;
+            updateButton.Enabled = shown > 0 && !busy;
+            copyButton.Enabled = shown > 0 && !busy;
         }
 
         private void refreshDrives() {
@@ -290,8 +345,10 @@ namespace Exporter {
                 statusLabel.Text = allDrivesBox.Checked ? "Kein Laufwerk gefunden." : "Kein USB-Stick gefunden. Stick einstecken oder \"alle Laufwerke\" anhaken.";
         }
 
-        private async Task copyImages(bool overwrite) {
-            if (store == null || images.Count == 0)
+        private async Task copy(bool overwrite) {
+            bool copyVideos = videoMode;
+
+            if (copyVideos ? videoStore == null || videos.Count == 0 : imageStore == null || images.Count == 0)
                 return;
 
             if (driveBox.SelectedItem is not DriveItem item) {
@@ -302,39 +359,20 @@ namespace Exporter {
             DriveInfo drive = item.Drive;
             string destination = Path.Combine(drive.RootDirectory.FullName, folderBox.Text.Trim());
 
-            //images are copied from the same SchuleApi folder, never into it
+            //the files are copied from the SchuleApi folder, never into it
             if (Path.GetFullPath(destination).StartsWith(Path.GetFullPath(sourceBox.Text.Trim()), StringComparison.OrdinalIgnoreCase)) {
-                MessageBox.Show(this, "Das Ziel liegt im Bilder-Ordner selbst.", "Kopieren", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, "Das Ziel liegt im SchuleApi-Ordner selbst.", "Kopieren", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            List<StoredImage> toCopy = images.ToList();
-
-            //the videos go into the folder "Videos" next to the image folder, e.g. E:\Videos for E:\Bilder
+            //the database is next to the folder, e.g. E:\bilder.db for E:\Bilder and E:\Videos
             string parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(destination)) ?? destination;
-            string videoDestination = Path.Combine(parent, "Videos");
-            List<StoredVideo> videosToCopy = new List<StoredVideo>();
+            string database = Path.Combine(parent, "bilder.db");
 
-            if (copyVideosBox.Checked) {
-                string videoRoot = videoSourceBox.Text.Trim();
+            List<StoredImage> imagesToCopy = images.ToList();
+            List<StoredVideo> videosToCopy = videos.ToList();
 
-                if (!SchuleVideoStore.IsVideoStore(videoRoot)) {
-                    MessageBox.Show(this, "Im Video-Ordner gibt es keinen Unterordner \"videoFolder\".", "Videos", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-
-                statusLabel.Text = "Videos werden eingelesen...";
-
-                try {
-                    SchuleVideoStore videoStore = await Task.Run(() => SchuleVideoStore.Load(videoRoot));
-                    videosToCopy = videoStore.GetVideos(filterBox.Text.Trim());
-                } catch (Exception e) {
-                    MessageBox.Show(this, "Die Videos konnten nicht eingelesen werden:\n" + e.Message, "Videos", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-            }
-
-            long needed = ImageCopier.GetSize(toCopy, destination, overwrite) + VideoCopier.GetSize(videosToCopy, videoDestination, overwrite);
+            long needed = copyVideos ? VideoCopier.GetSize(videosToCopy, destination, overwrite) : ImageCopier.GetSize(imagesToCopy, destination, overwrite);
             long free;
 
             try {
@@ -347,15 +385,14 @@ namespace Exporter {
 
             if (needed > free) {
                 DialogResult answer = MessageBox.Show(this,
-                    (videosToCopy.Count > 0 ? "Die Bilder und Videos brauchen " : "Die Bilder brauchen ") + formatSize(needed) + ", auf " + drive.Name + " sind nur " + formatSize(free) + " frei.\n\nTrotzdem so viele wie möglich kopieren?",
+                    "Die " + kind + " brauchen " + formatSize(needed) + ", auf " + drive.Name + " sind nur " + formatSize(free) + " frei.\n\nTrotzdem so viele wie möglich kopieren?",
                     "Zu wenig Platz", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
 
                 if (answer != DialogResult.Yes)
                     return;
             }
 
-            DescriptionCategorizer categorizer;
-            string[] files = { descriptionsBox.Text.Trim(), sameTagsBox.Text.Trim(), personsBox.Text.Trim(), tagsBox.Text.Trim() };
+            string[] files = { sameTagsBox.Text.Trim(), personsBox.Text.Trim(), tagsBox.Text.Trim() };
 
             foreach (string file in files) {
                 if (file.Length > 0 && !File.Exists(file)) {
@@ -364,76 +401,80 @@ namespace Exporter {
                 }
             }
 
-            try {
-                //without a descriptions file the descriptions saved in SchuleApi are used
-                IEnumerable<(int, string)> schuleApiDescriptions = store.GetImages("").Select(image => (image.Number, image.Description));
+            DescriptionCategorizer categorizer;
 
-                categorizer = DescriptionCategorizer.Load(files[0], files[1], files[2], files[3], schuleApiDescriptions);
+            try {
+                //the descriptions are the ones saved in SchuleApi
+                IEnumerable<(int, string)> descriptions = copyVideos
+                    ? videoStore!.GetVideos("").Select(video => (video.Number, video.Description))
+                    : imageStore!.GetImages("").Select(image => (image.Number, image.Description));
+
+                categorizer = DescriptionCategorizer.Load(files[0], files[1], files[2], descriptions);
             } catch (Exception e) {
-                MessageBox.Show(this, "Die Beschreibungen konnten nicht eingelesen werden:\n" + e.Message, "Beschreibungen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, "Die Listen konnten nicht eingelesen werden:\n" + e.Message, "Beschreibungen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             saveSettings();
-            setCopying(true);
-            progressBar.Maximum = toCopy.Count;
-            progressBar.Value = 0;
 
             cancel = new CancellationTokenSource();
             CancellationToken token = cancel.Token;
 
-            string phase = "Kopiere Bilder";
+            setBusy(true);
+
+            string phase = "Kopiere " + kind;
             Progress<int> progress = new Progress<int>(done => {
                 progressBar.Value = Math.Min(done, progressBar.Maximum);
                 statusLabel.Text = phase + ": " + done + " von " + progressBar.Maximum + " (" + done * 100 / Math.Max(1, progressBar.Maximum) + " %)";
             });
 
             try {
-                ImageCopier.Result result = await Task.Run(() => ImageCopier.Copy(toCopy, destination, overwrite, progress, token));
+                progressBar.Maximum = Math.Max(1, copyVideos ? videosToCopy.Count : imagesToCopy.Count);
+                progressBar.Value = 0;
 
-                string text = result.Copied + " kopiert";
-                if (result.Skipped > 0)
-                    text += ", " + result.Skipped + " übersprungen (schon vorhanden)";
-                if (result.Failed > 0)
-                    text += ", " + result.Failed + " fehlgeschlagen (" + result.FirstError + ")";
-                if (result.Cancelled)
-                    text += ". Abgebrochen.";
-                else
-                    text += ".";
+                string text;
+                bool cancelled;
+                List<int> copiedNumbers;
+                Func<Task> writeDatabase;
 
-                if (!result.Cancelled) {
+                if (copyVideos) {
+                    VideoCopier.Result result = await Task.Run(() => VideoCopier.Copy(videosToCopy, destination, overwrite, progress, token));
+
+                    text = summary(result.Copied, result.Skipped, result.Failed, result.FirstError, result.Cancelled);
+                    cancelled = result.Cancelled;
+                    copiedNumbers = result.Files.Select(copied => copied.Video.Number).ToList();
+                    writeDatabase = () => Task.Run(() => ImageDatabase.WriteVideos(database, categorizer, result.Files, progress, token));
+                } else {
+                    ImageCopier.Result result = await Task.Run(() => ImageCopier.Copy(imagesToCopy, destination, overwrite, progress, token));
+
+                    text = summary(result.Copied, result.Skipped, result.Failed, result.FirstError, result.Cancelled);
+                    cancelled = result.Cancelled;
+                    copiedNumbers = result.Files.Select(copied => copied.Image.Number).ToList();
+                    writeDatabase = () => Task.Run(() => ImageDatabase.Write(database, categorizer, result.Files, progress, token));
+                }
+
+                if (!cancelled) {
                     try {
-                        //the database is next to the image folder, e.g. E:\bilder.db for E:\Bilder
-                        string database = Path.Combine(parent, "bilder.db");
-
                         phase = "Aktualisiere Datenbank";
-                        progressBar.Maximum = Math.Max(1, result.Files.Count);
+                        progressBar.Maximum = Math.Max(1, copiedNumbers.Count);
                         progressBar.Value = 0;
 
-                        await Task.Run(() => ImageDatabase.Write(database, categorizer, result.Files, progress, token));
+                        await writeDatabase();
 
-                        string debugFile = Path.Combine(Path.GetDirectoryName(database)!, "beschreibungen_debug.txt");
+                        string currentKind = kind;
+                        string debugFile = Path.Combine(parent, "beschreibungen_debug_" + currentKind.ToLower() + ".txt");
 
                         try {
-                            if (categorizer != null)
-                                await Task.Run(() => categorizer.WriteDebugFile(debugFile, result.Files.Select(copied => copied.Image.Number)));
-                            else
-                                File.WriteAllText(debugFile, "Keine Beschreibungsdatei ausgewählt, deshalb wurden keine Personen, Tags und Freitexte geschrieben.");
+                            await Task.Run(() => categorizer.WriteDebugFile(debugFile, currentKind, copiedNumbers));
                         } catch (Exception e) {
                             Console.WriteLine(e.Message);
                         }
 
-                        if (token.IsCancellationRequested)
-                            text += " Datenbank nur teilweise aktualisiert (abgebrochen).";
-                        else
-                            text += categorizer != null ? " Datenbank mit Beschreibungen aktualisiert." : " Datenbank aktualisiert (ohne Beschreibungen).";
+                        text += token.IsCancellationRequested ? " Datenbank nur teilweise aktualisiert (abgebrochen)." : " Datenbank aktualisiert.";
                     } catch (Exception e) {
                         text += " Datenbank konnte nicht gespeichert werden: " + e.Message;
                     }
                 }
-
-                if (!token.IsCancellationRequested && videosToCopy.Count > 0)
-                    text += " " + await copyVideos(videosToCopy, videoDestination, Path.Combine(parent, "bilder.db"), categorizer, overwrite, progress, value => phase = value, token);
 
                 statusLabel.Text = text;
             } catch (Exception e) {
@@ -442,61 +483,43 @@ namespace Exporter {
                 cancel.Dispose();
                 cancel = null;
 
-                setCopying(false);
+                setBusy(false);
                 refreshDrives();
             }
         }
 
-        private async Task<string> copyVideos(List<StoredVideo> videos, string destination, string database, DescriptionCategorizer categorizer, bool overwrite, Progress<int> progress, Action<string> setPhase, CancellationToken token) {
-            setPhase("Kopiere Videos");
-            progressBar.Maximum = videos.Count;
-            progressBar.Value = 0;
+        private string summary(int copied, int skipped, int failed, string? firstError, bool cancelled) {
+            string text = kind + ": " + copied + " kopiert";
 
-            VideoCopier.Result result = await Task.Run(() => VideoCopier.Copy(videos, destination, overwrite, progress, token));
+            if (skipped > 0)
+                text += ", " + skipped + " übersprungen (schon vorhanden)";
+            if (failed > 0)
+                text += ", " + failed + " fehlgeschlagen (" + firstError + ")";
 
-            string text = "Videos: " + result.Copied + " kopiert";
-            if (result.Skipped > 0)
-                text += ", " + result.Skipped + " übersprungen";
-            if (result.Failed > 0)
-                text += ", " + result.Failed + " fehlgeschlagen (" + result.FirstError + ")";
-            text += result.Cancelled ? ", abgebrochen." : ".";
-
-            if (result.Cancelled)
-                return text;
-
-            try {
-                setPhase("Aktualisiere Datenbank (Videos)");
-                progressBar.Maximum = Math.Max(1, result.Files.Count);
-                progressBar.Value = 0;
-
-                await Task.Run(() => ImageDatabase.WriteVideos(database, categorizer, result.Files, progress, token));
-            } catch (Exception e) {
-                text += " Datenbank der Videos konnte nicht gespeichert werden: " + e.Message;
-            }
-
-            return text;
+            return text + (cancelled ? ". Abgebrochen." : ".");
         }
 
-        private void setCopying(bool copying) {
-            loadButton.Enabled = !copying;
-            browseSourceButton.Enabled = !copying;
-            filterBox.Enabled = !copying;
-            driveBox.Enabled = !copying;
-            refreshDrivesButton.Enabled = !copying;
-            allDrivesBox.Enabled = !copying;
-            folderBox.Enabled = !copying;
-            descriptionsBox.Enabled = !copying;
-            sameTagsBox.Enabled = !copying;
-            personsBox.Enabled = !copying;
-            tagsBox.Enabled = !copying;
-            videoSourceBox.Enabled = !copying;
-            browseVideoSourceButton.Enabled = !copying;
-            copyVideosBox.Enabled = !copying;
+        //while loading or copying only cancelling is possible
+        private void setBusy(bool value) {
+            busy = value;
+
+            imagesRadio.Enabled = !busy;
+            videosRadio.Enabled = !busy;
+            sourceBox.Enabled = !busy;
+            loadButton.Enabled = !busy;
+            browseSourceButton.Enabled = !busy;
+            driveBox.Enabled = !busy;
+            refreshDrivesButton.Enabled = !busy;
+            allDrivesBox.Enabled = !busy;
+            folderBox.Enabled = !busy;
+            sameTagsBox.Enabled = !busy;
+            personsBox.Enabled = !busy;
+            tagsBox.Enabled = !busy;
             foreach (Button button in fileButtons)
-                button.Enabled = !copying;
-            updateButton.Enabled = !copying;
-            copyButton.Enabled = !copying;
-            cancelButton.Enabled = copying;
+                button.Enabled = !busy;
+            cancelButton.Enabled = busy && cancel != null;
+
+            applyFilter();
         }
 
         private static string formatSize(long bytes) {

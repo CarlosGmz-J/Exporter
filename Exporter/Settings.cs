@@ -3,16 +3,17 @@ using System.Text.Json;
 namespace Exporter {
     //the paths of the last run, they are filled in again when the app is opened the next time
     public class Settings {
+        //"Bilder" or "Videos"
+        public string? Mode { get; set; }
         public string? Source { get; set; }
+        public string? VideoSource { get; set; }
         public string? Drive { get; set; }
         public bool AllDrives { get; set; }
         public string? Folder { get; set; }
-        public string? Descriptions { get; set; }
+        public string? VideoFolder { get; set; }
         public string? SameTags { get; set; }
         public string? Persons { get; set; }
         public string? Tags { get; set; }
-        public string? VideoSource { get; set; }
-        public bool CopyVideos { get; set; }
 
         private static string file => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Exporter", "settings.json");
 
