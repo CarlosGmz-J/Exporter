@@ -438,9 +438,16 @@ namespace Exporter {
                 Func<Task> writeDatabase;
 
                 if (copyVideos) {
-                    VideoCopier.Result result = await Task.Run(() => VideoCopier.Copy(videosToCopy, destination, overwrite, progress, token));
+                    //the previews are next to the video folder, e.g. E:\Previews\0\0.png for E:\Videos
+                    string previews = Path.Combine(parent, "Previews");
+                    VideoCopier.Result result = await Task.Run(() => VideoCopier.Copy(videosToCopy, destination, previews, overwrite, progress, token));
 
                     text = summary(result.Copied, result.Skipped, result.Failed, result.FirstError, result.Cancelled);
+
+                    if (result.Renamed > 0)
+                        text += " " + result.Renamed + " vorhandene umbenannt.";
+                    if (result.PreviewsFailed > 0)
+                        text += " Vorschaubilder für " + result.PreviewsFailed + " Videos fehlgeschlagen (" + result.FirstPreviewError + ").";
                     cancelled = result.Cancelled;
                     copiedNumbers = result.Files.Select(copied => copied.Video.Number).ToList();
                     writeDatabase = () => Task.Run(() => ImageDatabase.WriteVideos(database, categorizer, result.Files, progress, token));
