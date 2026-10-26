@@ -1,4 +1,4 @@
-using StoredImage = Exporter.StoredImageStore.StoredImage;
+using StoredImage = Exporter.SchuleImageStore.StoredImage;
 
 namespace Exporter {
     public partial class Form1 : Form {
