@@ -17,6 +17,19 @@ namespace Exporter {
             CREATE INDEX IF NOT EXISTS image_tags_tag ON image_tags(tag);
             CREATE INDEX IF NOT EXISTS free_texts_image ON free_texts(image);";
 
+        //One row per image with all persons, tags and free texts joined by commas, for looking at the data.
+        //The data itself is in the link tables, every image can have any number of persons, tags and free texts.
+        private const string overview = @"
+            DROP VIEW IF EXISTS image_overview;
+            CREATE VIEW image_overview AS
+            SELECT i.number, i.file,
+                (SELECT group_concat(p.name, ', ') FROM image_persons ip JOIN persons p ON p.id = ip.person WHERE ip.image = i.number) AS persons,
+                (SELECT group_concat(t.name, ', ') FROM image_tags it JOIN tags t ON t.id = it.tag WHERE it.image = i.number) AS tags,
+                (SELECT group_concat(f.text, ', ') FROM free_texts f WHERE f.image = i.number) AS free_texts,
+                i.stored_at, i.changed_at, i.size, i.width, i.height, i.format, i.taken_at,
+                i.camera_make, i.camera_model, i.orientation, i.latitude, i.longitude, i.altitude
+            FROM images i;";
+
         //columns that were added later, databases from older versions get them added
         private static readonly (string Name, string Type)[] imageColumns = {
             ("stored_at", "TEXT"),
@@ -50,6 +63,7 @@ namespace Exporter {
 
             execute(connection, schema);
             addMissingColumns(connection);
+            execute(connection, overview);
 
             using SqliteTransaction transaction = connection.BeginTransaction();
 
