@@ -51,8 +51,8 @@ namespace Exporter {
                 //the middle of each of the count equal parts, so neither the first nor the last (often black) frame is used
                 TimeSpan time = TimeSpan.FromTicks(length.Ticks * (2 * i + 1) / (2 * count));
 
-                //0 x 0 keeps the size of the video
-                using var frame = composition.GetThumbnailAsync(time, 0, 0, VideoFramePrecision.NearestFrame).AsTask().GetAwaiter().GetResult();
+                //0 x 0 keeps the size of the video. The nearest key frame is used, because decoding up to the exact frame is very slow.
+                using var frame = composition.GetThumbnailAsync(time, 0, 0, VideoFramePrecision.NearestKeyFrame).AsTask().GetAwaiter().GetResult();
                 using MemoryStream memory = new MemoryStream();
 
                 frame.AsStreamForRead().CopyTo(memory);
