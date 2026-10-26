@@ -1,10 +1,10 @@
-using System.Drawing.Imaging;
-using Windows.Media.Editing;
-using Windows.Storage;
+using System.Diagnostics;
+using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace Exporter {
     //takes screenshots spread over a copied video and saves them as <previews>\<number>\0.png, 1.png, ...
-    //Windows decodes the video itself (Windows.Media.Editing), so no ffmpeg is needed.
+    //The screenshots are made by ffmpeg.exe, which is searched next to the app and then in the PATH.
     public static class VideoPreviews {
         //a 1 minute video gets 5 previews, a 10 minute video 20, in between and above it grows linearly
         public static int GetCount(TimeSpan length) {
@@ -33,13 +33,7 @@ namespace Exporter {
 
             Directory.CreateDirectory(part);
 
-            StorageFile storageFile = StorageFile.GetFileFromPathAsync(Path.GetFullPath(videoFile)).AsTask().GetAwaiter().GetResult();
-            MediaClip clip = MediaClip.CreateFromFileAsync(storageFile).AsTask().GetAwaiter().GetResult();
-
-            MediaComposition composition = new MediaComposition();
-            composition.Clips.Add(clip);
-
-            TimeSpan length = clip.OriginalDuration > TimeSpan.Zero ? clip.OriginalDuration : TimeSpan.FromSeconds(lengthSeconds);
+            TimeSpan length = lengthSeconds > 0 ? TimeSpan.FromSeconds(lengthSeconds) : readLength(videoFile);
             int count = GetCount(length);
 
             for (int i = 0; i < count; i++) {
@@ -50,17 +44,14 @@ namespace Exporter {
 
                 //the middle of each of the count equal parts, so neither the first nor the last (often black) frame is used
                 TimeSpan time = TimeSpan.FromTicks(length.Ticks * (2 * i + 1) / (2 * count));
+                string target = Path.Combine(part, i + ".png");
 
-                //0 x 0 keeps the size of the video. The nearest key frame is used, because decoding up to the exact frame is very slow.
-                using var frame = composition.GetThumbnailAsync(time, 0, 0, VideoFramePrecision.NearestKeyFrame).AsTask().GetAwaiter().GetResult();
-                using MemoryStream memory = new MemoryStream();
+                //-ss before -i jumps straight to the position instead of decoding the video from the start
+                runFfmpeg("-hide_banner -loglevel error -ss " + time.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)
+                    + " -i \"" + Path.GetFullPath(videoFile) + "\" -frames:v 1 -y \"" + target + "\"");
 
-                frame.AsStreamForRead().CopyTo(memory);
-                memory.Position = 0;
-
-                using Image image = Image.FromStream(memory);
-
-                image.Save(Path.Combine(part, i + ".png"), ImageFormat.Png);
+                if (!File.Exists(target))
+                    throw new IOException("ffmpeg hat kein Bild bei " + time.ToString(@"hh\:mm\:ss") + " erzeugt.");
             }
 
             if (Directory.Exists(folder))
@@ -69,6 +60,58 @@ namespace Exporter {
             Directory.Move(part, folder);
 
             return true;
+        }
+
+        //only used if SchuleApi has no length for the video, ffmpeg prints "Duration: 00:10:02.35" for the input
+        private static TimeSpan readLength(string videoFile) {
+            string output = runFfmpeg("-hide_banner -i \"" + Path.GetFullPath(videoFile) + "\"");
+            Match match = Regex.Match(output, @"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)");
+
+            if (!match.Success)
+                throw new IOException("ffmpeg konnte die Länge des Videos nicht lesen.");
+
+            return TimeSpan.FromHours(int.Parse(match.Groups[1].Value))
+                + TimeSpan.FromMinutes(int.Parse(match.Groups[2].Value))
+                + TimeSpan.FromSeconds(double.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture));
+        }
+
+        private static string findFfmpeg() {
+            string local = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
+
+            if (File.Exists(local))
+                return local;
+
+            foreach (string folder in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)) {
+                try {
+                    string file = Path.Combine(folder.Trim('"'), "ffmpeg.exe");
+
+                    if (File.Exists(file))
+                        return file;
+                } catch (ArgumentException) {
+                }
+            }
+
+            throw new FileNotFoundException("ffmpeg.exe nicht gefunden (neben der App oder im PATH ablegen).");
+        }
+
+        private static string? ffmpeg;
+
+        //returns what ffmpeg wrote to stderr, it is read completely so ffmpeg never blocks on a full pipe
+        private static string runFfmpeg(string arguments) {
+            ffmpeg ??= findFfmpeg();
+
+            ProcessStartInfo start = new ProcessStartInfo(ffmpeg, arguments) {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true,
+            };
+
+            using Process process = Process.Start(start)!;
+
+            string output = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+
+            return output;
         }
     }
 }
